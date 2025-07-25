@@ -1,0 +1,86 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+*.pyc
+*.pyo
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+*.venv/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+.cache/
+.pytest_cache/
+.coverage
+.nyc_output
+
+# Docker related
+*.pid
+.dockerignore
+
+# Network capture files
+*.pcap
+*.pcapng
+*.cap
+
+# Security and sensitive files
+*.key
+*.pem
+*.cert
+*.crt
+secrets/
+config/secrets.yaml
+.env.local
+.env.production
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Project specific
+# Backup files
+*.bak
+*.backup
+*.old
+
+# Test output
+test_results/
+coverage_html/
+.tox/
+
+# Documentation build
+docs/_build/
+*.pdf
+
+# Jupyter notebooks checkpoints
+.ipynb_checkpoints/
