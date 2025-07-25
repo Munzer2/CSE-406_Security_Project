@@ -20,6 +20,7 @@ ICMP-Redirect/
 │   ├── setup_environment.sh           # Docker environment setup script
 │   ├── cleanup_docker_environment.sh  # Complete environment cleanup script
 │   ├── check_environment.sh           # Environment status checker
+│   ├── verify_setup.sh                # Complete setup verification
 │   └── demo_attack.sh                 # Automated attack demonstration
 └── README.md                          # Complete documentation
 ```
@@ -80,9 +81,12 @@ sudo ./scripts/setup_environment.sh
 This script will:
 - Create Docker network with subnet 10.0.0.0/24
 - Start four containers (router, victim, attacker, target)
-- Install necessary dependencies
-- Copy attack scripts to appropriate containers
-- Configure network settings
+- Install necessary dependencies (Python, Scapy, network tools)
+- Ensure proper directory structure in containers
+- Copy all Python files (attacker.py, victim.py, target.py, util.py, verify_packets.py) to all containers
+- Set executable permissions on Python files
+- Configure network settings (IP forwarding, ICMP redirects)
+- Verify file copying was successful
 - Test basic connectivity
 
 ### 2. Verify Environment
@@ -92,6 +96,19 @@ Check the status of your environment:
 ```bash
 sudo ./scripts/check_environment.sh
 ```
+
+Or run a complete setup verification:
+
+```bash
+sudo ./scripts/verify_setup.sh
+```
+
+The verification script will check:
+- Project file structure and syntax
+- Script permissions
+- Docker availability and container status
+- File presence in containers
+- Overall setup completeness
 
 This will show you:
 - Docker daemon status
@@ -114,6 +131,41 @@ sudo docker exec victim ping -c3 10.0.0.4
 
 # Check initial routing table
 sudo docker exec victim ip route
+```
+
+### 3. File Copying Troubleshooting
+
+The setup script automatically ensures the `/root/` directory exists in all containers and copies all Python files. If files are still missing in containers, you can:
+
+**Check which files are missing:**
+```bash
+sudo ./scripts/check_environment.sh
+```
+
+**Manually verify files in containers:**
+```bash
+# Check files in a specific container
+sudo docker exec victim ls -la /root/*.py
+
+# Check if specific files exist
+sudo docker exec victim test -f /root/victim.py && echo "victim.py exists"
+sudo docker exec attacker test -f /root/attacker.py && echo "attacker.py exists"
+```
+
+**If files are still missing, manually copy them:**
+```bash
+# Ensure directory exists and copy files
+sudo docker exec victim mkdir -p /root
+sudo docker cp src/victim.py victim:/root/victim.py
+sudo docker cp src/attacker.py attacker:/root/attacker.py
+sudo docker cp src/target.py target:/root/target.py
+sudo docker cp src/util.py victim:/root/util.py
+sudo docker cp src/verify_packets.py attacker:/root/verify_packets.py
+
+# Set executable permissions
+sudo docker exec victim chmod +x /root/*.py
+sudo docker exec attacker chmod +x /root/*.py
+sudo docker exec target chmod +x /root/*.py
 ```
 
 ## Running the Attack

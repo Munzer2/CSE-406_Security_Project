@@ -137,30 +137,60 @@ echo "$(docker volume ls | wc -l | xargs expr -1 +)"
 
 # Files status
 print_status "Project Files:"
+
+# Get the absolute path to the script directory
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+
 PROJECT_FILES=(
-    "scripts/setup_environment.sh"
-    "scripts/cleanup_docker_environment.sh" 
-    "scripts/demo_attack.sh"
-    "scripts/check_environment.sh"
-    "src/attacker.py"
-    "src/victim.py"
-    "src/target.py"
-    "src/verify_packets.py"
-    "src/util.py"
-    "README.md"
+    "$PROJECT_DIR/scripts/setup_environment.sh"
+    "$PROJECT_DIR/scripts/cleanup_docker_environment.sh" 
+    "$PROJECT_DIR/scripts/demo_attack.sh"
+    "$PROJECT_DIR/scripts/check_environment.sh"
+    "$PROJECT_DIR/src/attacker.py"
+    "$PROJECT_DIR/src/victim.py"
+    "$PROJECT_DIR/src/target.py"
+    "$PROJECT_DIR/src/verify_packets.py"
+    "$PROJECT_DIR/src/util.py"
+    "$PROJECT_DIR/README.md"
 )
 
 for file in "${PROJECT_FILES[@]}"; do
+    # Get just the relative path for display
+    display_path=$(realpath --relative-to="$PROJECT_DIR" "$file")
     if [ -f "$file" ]; then
         if [ -x "$file" ]; then
-            echo -e "  $file: ${GREEN}Exists (executable)${NC}"
+            echo -e "  $display_path: ${GREEN}Exists (executable)${NC}"
         else
-            echo -e "  $file: ${GREEN}Exists${NC}"
+            echo -e "  $display_path: ${GREEN}Exists${NC}"
         fi
     else
-        echo -e "  $file: ${RED}Missing${NC}"
+        echo -e "  $display_path: ${RED}Missing${NC}"
     fi
 done
+
+# Check files inside containers
+if [ $running_count -eq 4 ]; then
+    print_status "Container Files Status:"
+    containers=("victim" "attacker" "target")
+    required_files=("victim.py" "attacker.py" "target.py" "util.py" "verify_packets.py")
+    
+    for container in "${containers[@]}"; do
+        echo -n "  $container: "
+        missing_files=()
+        for file in "${required_files[@]}"; do
+            if ! docker exec "$container" test -f "/root/$file" 2>/dev/null; then
+                missing_files+=("$file")
+            fi
+        done
+        
+        if [ ${#missing_files[@]} -eq 0 ]; then
+            echo -e "${GREEN}All files present${NC}"
+        else
+            echo -e "${RED}Missing: ${missing_files[*]}${NC}"
+        fi
+    done
+fi
 
 echo ""
 

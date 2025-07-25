@@ -123,20 +123,60 @@ pip3 install --quiet scapy
 # 8. Copy attack scripts to containers
 print_status "Copying attack scripts to containers..."
 
-# Copy to victim
-docker cp ../src/victim.py victim:/root/victim.py
-docker cp ../src/util.py victim:/root/util.py
-docker exec victim chmod +x /root/victim.py
+# Get the absolute path to the script directory
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+SRC_DIR="$PROJECT_DIR/src"
 
-# Copy to attacker
-docker cp ../src/attacker.py attacker:/root/attacker.py
-docker cp ../src/util.py attacker:/root/util.py
-docker exec attacker chmod +x /root/attacker.py
+print_status "Project directory: $PROJECT_DIR"
+print_status "Source directory: $SRC_DIR"
 
-# Copy to target
-docker cp ../src/target.py target:/root/target.py
-docker cp ../src/util.py target:/root/util.py
-docker exec target chmod +x /root/target.py
+# Copy all Python files to all containers for maximum flexibility
+containers=("victim" "attacker" "target" "router")
+files=("victim.py" "attacker.py" "target.py" "util.py" "verify_packets.py")
+
+for container in "${containers[@]}"; do
+    print_status "Copying Python files to $container..."
+    
+    # Ensure /root directory exists and has proper permissions
+    docker exec "$container" bash -c "mkdir -p /root && chmod 755 /root"
+    
+    for file in "${files[@]}"; do
+        if [ -f "$SRC_DIR/$file" ]; then
+            print_status "  Copying $file to $container"
+            docker cp "$SRC_DIR/$file" "$container:/root/$file"
+            if [ $? -eq 0 ]; then
+                print_status "  ✓ Successfully copied $file"
+            else
+                print_error "  ✗ Failed to copy $file"
+            fi
+        else
+            print_warning "  File $SRC_DIR/$file not found, skipping"
+        fi
+    done
+    # Make Python files executable
+    docker exec "$container" bash -c 'chmod +x /root/*.py' 2>/dev/null || true
+done
+
+print_status "All Python files copied to all containers"
+
+# Verify files were copied successfully
+print_status "Verifying file copying..."
+copy_failures=0
+for container in "${containers[@]}"; do
+    for file in "${files[@]}"; do
+        if ! docker exec "$container" test -f "/root/$file" 2>/dev/null; then
+            print_error "  $file missing in $container"
+            ((copy_failures++))
+        fi
+    done
+done
+
+if [ $copy_failures -eq 0 ]; then
+    print_status "✓ All Python files successfully copied and verified"
+else
+    print_warning "⚠ $copy_failures file copy failures detected"
+fi
 
 # 9. Configure IP forwarding and routing
 print_status "Configuring network settings..."
