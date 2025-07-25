@@ -1,0 +1,67 @@
+# 1) Create the Docker bridge
+sudo docker network create \
+  --driver=bridge \
+  --subnet=10.0.0.0/24 \
+  --gateway=10.0.0.254 \
+  icmpnet
+
+
+  # 2) Start your "router"
+sudo docker run -dit \
+  --name router \
+  --network icmpnet --ip 10.0.0.1 \
+  ubuntu:22.04 bash
+
+# 3) Start your "victim"
+sudo docker run -dit \
+  --name victim \
+  --network icmpnet --ip 10.0.0.2 \
+  ubuntu:22.04 bash
+
+# 4) Start your "attacker" in host‐mode (so it shares the host’s br‐icmpnet)
+sudo docker run -dit \
+  --name attacker \
+  --network host \
+  --cap-add=NET_RAW \
+  --cap-add=NET_ADMIN \
+  ubuntu:22.04 bash
+
+# 5) Install dependencies in attacker
+  sudo docker exec -it attacker bash -lc \
+  "apt update && \
+   apt install -y python3-pip libpcap-dev tcpdump && \
+   pip3 install scapy"
+
+
+
+   # ─── 1) Router dependencies ───────────────────────────────────────────────────
+#   • needs to answer ARP, respond to ping, and let us drop ICMP later
+sudo docker exec -it router bash -lc "\
+  apt update && \
+  apt install -y iproute2 iputils-ping iptables tcpdump"
+
+# ─── 2) Victim dependencies ───────────────────────────────────────────────────
+#   • needs to issue pings (iputils-ping) and have basic ip tools
+sudo docker exec -it victim bash -lc "\
+  apt update && \
+  apt install -y iproute2 iputils-ping"
+
+# ─── 3) Attacker dependencies ─────────────────────────────────────────────────
+#   • needs raw sockets, libpcap (for BPF filters), Python/Scapy & a sniffer (tcpdump)
+sudo docker exec -it attacker bash -lc "\
+  apt update && \
+  apt install -y python3 python3-pip libpcap-dev tcpdump && \
+  pip3 install scapy"
+
+
+
+### For pinging from victim to router:
+sudo docker exec victim ping -c5 10.0.0.1
+
+### Copying the spoof script into attacker's docker container.
+sudo docker cp spoof.py attacker:/root/spoof.py
+
+### Running the attack
+sudo docker exec -it attacker bash -lc "python3 /root/spoof.py"
+
+
