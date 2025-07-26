@@ -61,7 +61,7 @@ def handle_request(pkt):
             (4<<4)|5, 0,
             20 + 8 + len(ic.payload),
             0, 0,
-            64,                      # TTL
+            200,                      # TTL
             socket.IPPROTO_ICMP,
             0,
             socket.inet_aton(ROUTER_IP),
