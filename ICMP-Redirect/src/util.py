@@ -152,11 +152,22 @@ class PacketCrafter:
 class NetworkConfig:
     """Network configuration constants for the attack demo"""
     
-    VICTIM_IP = "10.0.0.2"
-    ROUTER_IP = "10.0.0.1"
-    ATTACKER_IP = "10.0.0.3"
-    TARGET_IP = "10.0.0.4"
-    GATEWAY_IP = "10.0.0.254"
+    # Dual-subnet topology for proper ICMP redirect attack
+    # Victim Network (192.168.1.0/24)
+    VICTIM_IP = "192.168.1.10"
+    ATTACKER_IP = "192.168.1.20"
+    ROUTER_VICTIM_IP = "192.168.1.1"
+    
+    # Target Network (192.168.2.0/24)
+    TARGET_IP = "192.168.2.10"
+    ROUTER_TARGET_IP = "192.168.2.1"
+    
+    # For backward compatibility
+    ROUTER_IP = ROUTER_VICTIM_IP  # Default router IP for victim
+    
+    # Network subnets
+    VICTIM_SUBNET = "192.168.1.0/24"
+    TARGET_SUBNET = "192.168.2.0/24"
     
     # ICMP Types
     ICMP_ECHO_REQUEST = 8

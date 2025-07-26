@@ -65,7 +65,7 @@ echo -e "  Summary: $running_count/$container_count containers running"
 
 # Check networks
 print_status "Network Status:"
-NETWORKS="icmp-redirect-net icmpnet"
+NETWORKS="icmp-redirect-net"
 network_count=0
 
 for network in $NETWORKS; do
@@ -84,28 +84,28 @@ if [ $running_count -eq 4 ]; then
     print_status "Network Connectivity Test:"
     
     echo -n "  Router -> Victim: "
-    if docker exec router ping -c1 -W2 10.0.0.2 >/dev/null 2>&1; then
+    if docker exec router ping -c1 -W2 192.168.1.10 >/dev/null 2>&1; then
         echo -e "${GREEN}OK${NC}"
     else
         echo -e "${RED}FAILED${NC}"
     fi
     
     echo -n "  Victim -> Target: "
-    if docker exec victim ping -c1 -W2 10.0.0.4 >/dev/null 2>&1; then
+    if docker exec victim ping -c1 -W2 192.168.2.10 >/dev/null 2>&1; then
         echo -e "${GREEN}OK${NC}"
     else
         echo -e "${RED}FAILED${NC}"
     fi
     
     echo -n "  Attacker -> Victim: "
-    if docker exec attacker ping -c1 -W2 10.0.0.2 >/dev/null 2>&1; then
+    if docker exec attacker ping -c1 -W2 192.168.1.10 >/dev/null 2>&1; then
         echo -e "${GREEN}OK${NC}"
     else
         echo -e "${RED}FAILED${NC}"
     fi
     
     echo -n "  Attacker -> Target: "
-    if docker exec attacker ping -c1 -W2 10.0.0.4 >/dev/null 2>&1; then
+    if docker exec attacker ping -c1 -W2 192.168.2.10 >/dev/null 2>&1; then
         echo -e "${GREEN}OK${NC}"
     else
         echo -e "${RED}FAILED${NC}"

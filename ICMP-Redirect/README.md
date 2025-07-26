@@ -28,20 +28,29 @@ ICMP-Redirect/
 ## Network Topology
 
 ```
-┌─────────────┐    ┌─────────────┐    ┌─────────────┐
-│   Router    │    │   Victim    │    │   Target    │
-│ 10.0.0.1    │    │ 10.0.0.2    │    │ 10.0.0.4    │
-│ (Gateway)   │    │ (Victim)    │    │ (Server)    │
-└─────────────┘    └─────────────┘    └─────────────┘
-       │                  │                  │
-       └──────────────────┼──────────────────┘
-                          │
-                 ┌─────────────┐
-                 │  Attacker   │
-                 │ 10.0.0.3    │
-                 │ (Malicious) │
-                 └─────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                Single Network Segment                       │
+│                     10.0.0.0/24                            │
+│                                                             │
+│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐     │
+│  │   Router    │    │   Victim    │    │   Target    │     │
+│  │ 10.0.0.1    │    │ 10.0.0.2    │    │ 10.0.0.4    │     │
+│  │ (Gateway)   │    │ (Victim)    │    │ (Server)    │     │
+│  └─────────────┘    └─────────────┘    └─────────────┘     │
+│                                                             │
+│                      ┌─────────────┐                       │
+│                      │  Attacker   │                       │
+│                      │ 10.0.0.3    │                       │
+│                      │ (Malicious) │                       │
+│                      └─────────────┘                       │
+└─────────────────────────────────────────────────────────────┘
 ```
+
+**Key Network Features:**
+- **Single Network**: All hosts on the same subnet (10.0.0.0/24) 
+- **Broadcast Domain**: Attacker can see all traffic on the network segment
+- **Attack Position**: Attacker is positioned to intercept victim-to-target communications
+- **Router**: Acts as the legitimate gateway that attacker will impersonate
 
 ## Technical Implementation
 
@@ -380,22 +389,6 @@ sudo docker system df
 3. **Containers Not Starting**: Verify Docker daemon is running
 4. **Attack Not Working**: Check ICMP redirect acceptance settings
 
-## Further Exploration
-
-### Advanced Scenarios
-
-1. **ARP Spoofing Integration**: Combine with ARP poisoning
-2. **SSL/TLS Interception**: Demonstrate HTTPS interception
-3. **DNS Redirection**: Redirect DNS queries
-4. **Multi-victim Attacks**: Scale attack to multiple victims
-
-### Research Questions
-
-1. How effective are modern OS protections against ICMP redirects?
-2. Can this attack be detected using machine learning?
-3. What is the performance impact of traffic redirection?
-4. How do different network topologies affect attack success?
-
 ## References
 
 - RFC 792: Internet Control Message Protocol
@@ -420,4 +413,3 @@ sudo ./scripts/cleanup_docker_environment.sh
 
 ---
 
-**Disclaimer**: This project is for educational purposes only. The authors are not responsible for any misuse of this information. Always ensure you have proper authorization before testing network security.

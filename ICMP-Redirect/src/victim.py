@@ -134,10 +134,10 @@ def main():
             victim.send_ping_to_target()
         elif sys.argv[1] == "--help":
             print("Usage:")
-            print("  python3 victim_traffic.py              # Generate continuous traffic")
-            print("  python3 victim_traffic.py --monitor    # Monitor for ICMP redirects")
-            print("  python3 victim_traffic.py --route      # Show routing table")
-            print("  python3 victim_traffic.py --single     # Send single ping")
+            print("  python3 victim.py              # Generate continuous traffic")
+            print("  python3 victim.py --monitor    # Monitor for ICMP redirects")
+            print("  python3 victim.py --route      # Show routing table")
+            print("  python3 victim.py --single     # Send single ping")
         else:
             print("Unknown option. Use --help for usage.")
     else:
