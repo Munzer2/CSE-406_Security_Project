@@ -98,7 +98,7 @@ fi
 # 3. Remove experiment networks
 print_status "Removing experiment networks..."
 
-EXPERIMENT_NETWORKS="icmp-redirect-net icmpnet"
+EXPERIMENT_NETWORKS="icmp-redirect-net"
 for network in $EXPERIMENT_NETWORKS; do
     if docker network ls -q -f name=$network | grep -q .; then
         echo -n "  Removing network $network: "

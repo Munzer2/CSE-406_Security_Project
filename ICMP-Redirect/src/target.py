@@ -110,7 +110,7 @@ def main():
     
     if len(sys.argv) > 1 and sys.argv[1] == "--help":
         print("Usage:")
-        print("  python3 target_host.py    # Start target host server")
+        print("  python3 target.py    # Start target host server")
     else:
         target.start_server()
 

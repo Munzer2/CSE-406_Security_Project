@@ -26,6 +26,10 @@ print_info() {
 
 print_header "ICMP Redirect Attack - Automated Demo"
 
+# Get script directory for absolute paths
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+
 # Check if environment is set up
 if ! docker ps | grep -q "victim\|attacker\|target\|router"; then
     echo -e "${RED}[ERROR]${NC} Docker environment not set up. Run setup_environment.sh first."
@@ -33,7 +37,7 @@ if ! docker ps | grep -q "victim\|attacker\|target\|router"; then
 fi
 
 print_step "1" "Verifying packet crafting functions..."
-python3 ../src/verify_packets.py
+sudo docker exec attacker python3 /root/verify_packets.py
 if [ $? -ne 0 ]; then
     echo -e "${RED}[ERROR]${NC} Packet verification failed. Check implementation."
     exit 1
