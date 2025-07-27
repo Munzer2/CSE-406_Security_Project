@@ -161,13 +161,6 @@ sudo docker exec router2 bash -lc "ip route del default && ip route add default 
 sudo docker exec attacker2 bash -lc "sysctl -w net.ipv4.ip_forward=1"
 ```
 
-### 6. Optional: Drop Real ICMP
-
-To ensure only the spoofed replies reach the victim, drop real pings in the attacker:
-
-```bash
-sudo docker exec attacker2 bash -lc "iptables -I FORWARD -s 20.10.0.2 -d 20.20.0.2 -p icmp --icmp-type echo-request -j DROP"
-```
 
 ---
 
