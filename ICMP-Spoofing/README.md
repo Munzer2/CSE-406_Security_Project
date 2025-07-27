@@ -1,6 +1,6 @@
 # ICMP Ping Spoof Attack Demo
 
-This repository demonstrates a simple ICMP Echo Request spoofing attack using Docker containers and a custom Python script (`spoof2.py`).  The attacker is positioned as a man-in-the-middle (MITM) gateway between a victim and a router, intercepting and forging ICMP replies.
+This repository demonstrates a simple ICMP Echo Request spoofing attack using Docker containers and a custom Python script (`spoof2.py`).  The attacker is positioned as a gateway between a victim and a router, intercepting and forging ICMP replies.
 
 ---
 
@@ -25,10 +25,60 @@ This repository demonstrates a simple ICMP Echo Request spoofing attack using Do
 ## Network Topology
 
 ```
-┌────────┐      net_vict_att        ┌──────────┐      net_att_rout       ┌────────┐
-│ Victim │ 20.10.0.2 ─────────────►  │ Attacker │ 20.20.0.3 ─────────► │ Router │
-│ victim2│                          │ attacker2│ 20.10.0.3         20.20.0.2 │router2 │
-└────────┘                          └──────────┘                      └────────┘
+                              ICMP Spoofing Attack Topology
+                              ══════════════════════════════
+
+    Network: net_vict_att                    Network: net_att_rout
+    Subnet: 20.10.0.0/24                    Subnet: 20.20.0.0/24
+    ┌─────────────────────┐                 ┌─────────────────────┐
+    │                     │                 │                     │
+    │                     │                 │                     │
+    │  ┌─────────────┐    │                 │    ┌─────────────┐  │
+    │  │   VICTIM    │    │                 │    │   ROUTER    │  │
+    │  │  (victim2)  │    │                 │    │  (router2)  │  │
+    │  │             │    │                 │    │             │  │
+    │  │ 20.10.0.2   │    │                 │    │ 20.20.0.2   │  │
+    │  └─────┬───────┘    │                 │    └─────┬───────┘  │
+    │        │            │                 │          │          │
+    │        │ eth0       │                 │          │ eth0     │
+    │        │            │                 │          │          │
+    │   ─────┼────────    │                 │     ─────┼────────  │
+    │        │            │                 │          │          │
+    │        │            │                 │          │          │
+    └────────┼────────────┘                 └──────────┼──────────┘
+             │                                         │
+             │                                         │
+          ┌──▼──┐                                   ┌──▼──┐
+          │eth0 │                                   │eth1 │
+          └──┬──┘                                   └──┬──┘
+             │                                         │
+       ┌─────▼──────────────────────────────────────────▼─────┐
+       │              ATTACKER (attacker2)                    │
+       │                                                      │
+       │  ┌─────────────────┐    ┌─────────────────────────┐  │
+       │  │ Interface eth0  │    │    Interface eth1       │  │
+       │  │   20.10.0.3     │    │      20.20.0.3         │  │
+       │  │                 │    │                         │  │
+       │  │ • IP Forwarding │    │ • Packet Interception  │  │
+       │  │ • ICMP Spoofing │    │ • Traffic Forwarding   │  │
+       │  └─────────────────┘    └─────────────────────────┘  │
+       └──────────────────────────────────────────────────────┘
+
+    ═══════════════════════════════════════════════════════════════════
+    
+    📡 Attack Flow:
+    ──────────────
+    1. Victim sends ICMP Echo Request → Attacker (20.10.0.3)
+    2. Attacker intercepts and drops real packets to Router
+    3. Attacker crafts spoofed ICMP Echo Reply
+    4. Victim receives fake reply appearing to come from Router
+    
+    🔧 Key Configuration:
+    ────────────────────
+    • Victim default gateway: 20.10.0.3 (Attacker)
+    • Router default gateway: 20.20.0.3 (Attacker) 
+    • Attacker has IP forwarding enabled
+    • iptables rules drop legitimate ICMP to ensure spoofing works
 ```
 
 * **victim2**: 20.10.0.2/24 on `net_vict_att`
