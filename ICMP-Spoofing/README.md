@@ -8,7 +8,8 @@ This repository demonstrates a simple ICMP Echo Request spoofing attack using Do
 
 1. [Network Topology](#network-topology)
 2. [Prerequisites](#prerequisites)
-3. [Setup](#setup)
+3. [Quick Start](#quick-start)
+4. [Manual Setup](#manual-setup)
 
    * [1. Create Docker Networks](#1-create-docker-networks)
    * [2. Launch Containers](#2-launch-containers)
@@ -16,9 +17,9 @@ This repository demonstrates a simple ICMP Echo Request spoofing attack using Do
    * [4. Configure Routing](#4-configure-routing)
    * [5. Enable IP Forwarding](#5-enable-ip-forwarding)
    * [6. Copy Attack Script](#6-copy-attack-script)
-4. [Attack Script (`spoof2.py`)](#attack-script-spoof2py)
-5. [Demonstration](#demonstration)
-6. [Cleanup](#cleanup)
+5. [Attack Script (`spoof2.py`)](#attack-script-spoof2py)
+6. [Demonstration](#demonstration)
+7. [Cleanup](#cleanup)
 
 ---
 
@@ -100,7 +101,72 @@ All traffic from `victim2` to `router2` is forced through `attacker2` for interc
 
 ---
 
-## Setup
+## Quick Start
+
+🚀 **Automated Setup & Attack Scripts Available!**
+
+This repository includes three automation scripts for easy setup and execution:
+
+### 📋 Available Scripts
+
+| Script | Purpose | Description |
+|--------|---------|-------------|
+| `setup.sh` | Environment Setup | Creates networks, containers, installs dependencies, configures routing |
+| `attack.sh` | Launch Attack | Starts the ICMP spoofing attack with monitoring |
+| `cleanup.sh` | Environment Cleanup | Removes all containers and networks |
+
+### 🎯 Quick Demo (3 Steps)
+
+```bash
+# 1. Setup the environment
+./setup.sh
+
+# 2. Launch the attack (in a new terminal)
+./attack.sh
+
+# 3. Test from victim (in another terminal)
+sudo docker exec victim2 ping -c4 20.20.0.2
+
+# 4. Cleanup when done
+./cleanup.sh
+```
+
+### 🔧 Script Features
+
+**setup.sh includes:**
+- ✅ Smart detection of existing containers (restart vs fresh setup)
+- ✅ Network creation with proper subnets
+- ✅ Container deployment with correct capabilities
+- ✅ Dependency installation (Python, Scapy, networking tools)
+- ✅ Routing configuration for man-in-the-middle positioning
+- ✅ Attack script deployment to attacker container
+- ✅ Setup verification and status reporting
+
+**attack.sh includes:**
+- ✅ Prerequisites verification
+- ✅ Baseline connectivity testing
+- ✅ Attack launch with monitoring
+- ✅ Interactive attack console
+
+**cleanup.sh includes:**
+- ✅ Safe removal of all demo resources
+- ✅ Confirmation prompts
+- ✅ Cleanup verification
+- ✅ Docker system cleanup
+
+### 📝 Script Usage Notes
+
+- All scripts require `sudo` for Docker operations
+- Scripts include comprehensive error handling and status reporting
+- Run `./setup.sh` first for initial environment setup
+- Use `./setup.sh` again to restart stopped containers
+- Scripts preserve your source files (spoof2.py, README.md, etc.)
+
+---
+
+## Manual Setup
+
+For those who prefer or need to set up manually, follow these steps:
 
 ### 1. Create Docker Networks
 
