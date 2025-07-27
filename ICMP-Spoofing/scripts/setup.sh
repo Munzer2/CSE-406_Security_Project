@@ -88,6 +88,7 @@ echo "✅ router2 container launched (20.20.0.2)"
 echo "  👹 Launching attacker2 container..."
 sudo docker run -d --name attacker2 \
   --cap-add NET_ADMIN --cap-add NET_RAW \
+  --sysctl net.ipv4.ip_forward=1 \
   --network net_vict_att --ip 20.10.0.3 \
   ubuntu:22.04 sleep infinity
 sudo docker network connect --ip 20.20.0.3 net_att_rout attacker2
@@ -125,13 +126,13 @@ echo "✅ IP forwarding enabled"
 
 # Step 6: Copy Attack Script
 echo "📋 Step 6: Copying Attack Script..."
-if [ -f "spoof2.py" ]; then
-    sudo docker cp spoof2.py attacker2:/root/spoof2.py
+if [ -f "../src/spoof2.py" ]; then
+    sudo docker cp ../src/spoof2.py attacker2:/root/spoof2.py
     sudo docker exec attacker2 chmod +x /root/spoof2.py
     echo "✅ spoof2.py copied to attacker2:/root/"
 else
-    echo "⚠️  Warning: spoof2.py not found in current directory"
-    echo "   Please ensure spoof2.py exists before running the attack"
+    echo "⚠️  Warning: spoof2.py not found in ../src/ directory"
+    echo "   Please ensure spoof2.py exists in the src folder before running the attack"
 fi
 
 # Verification
