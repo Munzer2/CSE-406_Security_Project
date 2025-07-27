@@ -15,7 +15,8 @@ This repository demonstrates a simple ICMP Echo Request spoofing attack using Do
    * [3. Install Dependencies](#3-install-dependencies)
    * [4. Configure Routing](#4-configure-routing)
    * [5. Enable IP Forwarding](#5-enable-ip-forwarding)
-   * [6. Optional: Drop Real ICMP](#6-optional-drop-real-icmp)
+   * [6. Copy Attack Script](#6-copy-attack-script)
+   * [7. Optional: Drop Real ICMP](#7-optional-drop-real-icmp)
 4. [Attack Script (`spoof2.py`)](#attack-script-spoof2py)
 5. [Demonstration](#demonstration)
 6. [Cleanup](#cleanup)
@@ -161,6 +162,19 @@ sudo docker exec router2 bash -lc "ip route del default && ip route add default 
 sudo docker exec attacker2 bash -lc "sysctl -w net.ipv4.ip_forward=1"
 ```
 
+### 6. Copy Attack Script
+
+```bash
+# Copy spoof2.py to attacker2
+sudo docker cp spoof2.py attacker2:/root/spoof2.py
+```
+
+### 7. Optional: Drop Real ICMP
+
+```bash
+# On Attacker, to drop real ICMP Echo Requests to Router
+sudo iptables -I FORWARD -s 20.10.0.2 -d 20.20.0.2 -p icmp --icmp-type echo-request -j DROP
+```
 
 ---
 
