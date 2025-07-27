@@ -169,13 +169,6 @@ sudo docker exec attacker2 bash -lc "sysctl -w net.ipv4.ip_forward=1"
 sudo docker cp spoof2.py attacker2:/root/spoof2.py
 ```
 
-### 7. Optional: Drop Real ICMP
-
-```bash
-# On Attacker, to drop real ICMP Echo Requests to Router
-sudo iptables -I FORWARD -s 20.10.0.2 -d 20.20.0.2 -p icmp --icmp-type echo-request -j DROP
-```
-
 ---
 
 ## Attack Script (`spoof2.py`)
