@@ -80,7 +80,6 @@ coverage_html/
 
 # Documentation build
 docs/_build/
-*.pdf
 
 # Jupyter notebooks checkpoints
 .ipynb_checkpoints/
