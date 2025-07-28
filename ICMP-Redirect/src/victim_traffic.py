@@ -1,127 +1,211 @@
 #!/usr/bin/env python3
 """
-Victim Traffic Generator
-This script generates traffic from the victim to the target server to demonstrate
-the ICMP Redirect attack. It continuously sends ping requests to the target.
+Victim Traffic Generator - Macvlan Implementation
+================================================
+This script generates realistic victim traffic that can be observed and
+redirected by the attacker in a macvlan environment.
+
+Features:
+- Uses common packet_craft.py library
+- Generates various types of traffic to target servers
+- Realistic timing and patterns
+- Easy to observe in macvlan L2 environment
 """
 
-import socket
-import struct
-import time
 import sys
-import os
+import time
+import threading
+import signal
+import subprocess
+import atexit
+from packet_craft import *
 
-# ─── CONFIG ─────────────────────────────────────────────────────────────────────
-VICTIM_IP = "10.9.0.5"       # Victim's IP (us)
-TARGET_IP = "192.168.60.5"   # Target's IP
-INTERVAL = 2                 # Ping interval in seconds
+# ═══════════════════════════════════════════════════════════════════════════════════
+# TRAFFIC CONFIGURATION  
+# ═══════════════════════════════════════════════════════════════════════════════════
 
-# ─── PACKET CRAFTING ─────────────────────────────────────────────────────────────
-def checksum(data: bytes) -> int:
-    """Compute Internet checksum for the data"""
-    if len(data) % 2:
-        data += b'\x00'
-    s = sum(struct.unpack(f"!{len(data)//2}H", data))
-    s = (s >> 16) + (s & 0xffff)
-    s += s >> 16
-    return ~s & 0xffff
+# Network addresses (matching macvlan setup)
+VICTIM_IP = "10.9.0.5"      # Our IP (victim)
+TARGET_IP = "10.9.0.200"    # Primary target server
+TARGET2_IP = "10.9.0.201"   # Secondary target server  
+ROUTER_IP = "10.9.0.11"     # Gateway router
 
-def create_icmp_echo_request(seq_num):
-    """Create an ICMP Echo Request packet"""
-    # ICMP header fields
-    icmp_type = 8  # Echo Request
-    icmp_code = 0
-    icmp_checksum = 0
-    icmp_id = os.getpid() & 0xFFFF  # Use process ID as identifier
-    icmp_seq = seq_num
-    
-    # Create a basic payload
-    payload = b'abcdefghijklmnopqrstuvwxyz'
-    
-    # Pack the ICMP header
-    icmp_header = struct.pack('!BBHHH', icmp_type, icmp_code, icmp_checksum, icmp_id, icmp_seq)
-    
-    # Calculate checksum
-    icmp_checksum = checksum(icmp_header + payload)
-    
-    # Pack the header again with the correct checksum
-    icmp_header = struct.pack('!BBHHH', icmp_type, icmp_code, icmp_checksum, icmp_id, icmp_seq)
-    
-    # Final packet
-    icmp_packet = icmp_header + payload
-    
-    return icmp_packet
+# Traffic patterns
+PING_INTERVAL = 3            # Seconds between pings
+EXTERNAL_TARGETS = ["8.8.8.8", "1.1.1.1"]  # External IPs to trigger redirects
 
-def ping_target(seq_num):
-    """Send a ping to the target"""
+# ═══════════════════════════════════════════════════════════════════════════════════
+# GLOBAL STATE
+# ═══════════════════════════════════════════════════════════════════════════════════
+
+traffic_active = True
+packets_sent = 0
+
+def signal_handler(sig, frame):
+    """Handle Ctrl+C gracefully"""
+    global traffic_active
+    print(f"\n🛑 Traffic generation stopped by user")
+    traffic_active = False
+    sys.exit(0)
+
+def cleanup():
+    """Cleanup function called on exit"""
+    global packets_sent
+    print(f"\n📊 Traffic Summary:")
+    print(f"   📤 Total packets sent: {packets_sent}")
+    print(f"   🎯 Check attacker logs for intercepted traffic")
+
+def send_ping(destination, identifier=None, sequence=None):
+    """
+    Send ICMP ping to destination
+    
+    Args:
+        destination: Target IP address
+        identifier: ICMP identifier (default random)
+        sequence: ICMP sequence (default random)
+        
+    Returns:
+        True if ping was sent successfully
+    """
+    global packets_sent
+    
     try:
-        # Create a raw socket for ICMP
-        with socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP) as s:
-            # Create ICMP packet
-            icmp_packet = create_icmp_echo_request(seq_num)
-            
-            # Send the packet
-            s.sendto(icmp_packet, (TARGET_IP, 0))
-            
-            print(f"🚀 Ping #{seq_num} sent to {TARGET_IP}")
-            
-            # Try to receive reply with timeout
-            s.settimeout(2)
-            try:
-                data, addr = s.recvfrom(1024)
-                print(f"📨 Received reply from {addr[0]}")
-            except socket.timeout:
-                print(f"⏱️  No reply received (timeout)")
+        # Create ping packet
+        ping_packet = create_ping_packet(VICTIM_IP, destination, identifier, sequence)
+        
+        # Send the packet
+        if send_packet(ping_packet, destination):
+            packets_sent += 1
+            print(f"📤 PING sent to {destination} (ID: {identifier or 'auto'}, Seq: {sequence or 'auto'})")
+            return True
+        else:
+            print(f"❌ Failed to send ping to {destination}")
+            return False
             
     except Exception as e:
-        print(f"❌ Failed to send ping: {e}")
+        print(f"❌ Error sending ping: {e}")
+        return False
 
-def display_routing_info():
-    """Display the victim's routing information"""
-    print("\n📋 Current Routing Table:")
-    os.system("ip route")
+def generate_internal_traffic():
+    """Generate ping traffic to internal target servers"""
     
-    print("\n📋 Current ARP Table:")
-    os.system("arp -a")
+    targets = [TARGET_IP, TARGET2_IP]
+    sequence = 1
+    
+    while traffic_active:
+        for target in targets:
+            if not traffic_active:
+                break
+                
+            print(f"\n🎯 Generating ping to internal target: {target}")
+            
+            # Send ping
+            send_ping(target, identifier=12345, sequence=sequence)
+            sequence += 1
+            
+            time.sleep(PING_INTERVAL)
 
-# ─── MAIN FUNCTION ─────────────────────────────────────────────────────────────────
+def generate_external_traffic():
+    """Generate ping traffic to external targets (should trigger redirects)"""
+    
+    sequence = 1000
+    
+    while traffic_active:
+        for target in EXTERNAL_TARGETS:
+            if not traffic_active:
+                break
+                
+            print(f"\n🌐 Generating ping to external target: {target}")
+            
+            # Send ping to external target
+            send_ping(target, identifier=54321, sequence=sequence)
+            sequence += 1
+            
+            time.sleep(PING_INTERVAL * 2)
+
+def monitor_routing_changes():
+    """Monitor our own routing table for changes"""
+    
+    print(f"📊 Starting routing monitor...")
+    last_routes = ""
+    
+    while traffic_active:
+        try:
+            result = subprocess.run(['ip', 'route'], capture_output=True, text=True)
+            current_routes = result.stdout.strip()
+            
+            if current_routes != last_routes:
+                print(f"\n📋 Routing table changed:")
+                for line in current_routes.split('\n'):
+                    if line.strip():
+                        print(f"   {line}")
+                print("")
+                last_routes = current_routes
+                
+            time.sleep(5)
+            
+        except Exception as e:
+            if traffic_active:
+                print(f"⚠️  Error monitoring routing: {e}")
+            break
+
 def main():
-    """Main function"""
-    print("🚀 Victim Traffic Generator")
-    print("======================================")
-    print(f"Victim IP: {VICTIM_IP}")
-    print(f"Target IP: {TARGET_IP}")
-    print(f"Ping Interval: {INTERVAL} seconds")
-    print("======================================")
+    """Main traffic generation function"""
+    global traffic_active
     
-    # Check if running as root
-    if os.geteuid() != 0:
-        print("❌ This script must be run as root to create raw sockets.")
-        sys.exit(1)
+    print("🚦 Victim Traffic Generator - Macvlan Version")
+    print("==============================================")
+    print(f"👤 Victim: {VICTIM_IP} (us)")
+    print(f"🎯 Internal Targets: {TARGET_IP}, {TARGET2_IP}")
+    print(f"🌐 External Targets: {', '.join(EXTERNAL_TARGETS)}")
+    print(f"🌐 Router: {ROUTER_IP}")
+    print("==============================================")
     
-    # Display initial routing info
-    display_routing_info()
+    # Register cleanup and signal handlers
+    atexit.register(cleanup)
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
     
-    print("\n📡 Starting traffic generation...")
-    print("Press Ctrl+C to stop")
+    print(f"\n📊 Traffic Configuration:")
+    print(f"   Ping interval: {PING_INTERVAL}s")
+    print(f"   Traffic type: ICMP ping (sufficient for ICMP redirect)")
     
-    seq_num = 1
+    print(f"\n💡 Instructions:")
+    print(f"   1. This script generates victim ping traffic (sufficient for ICMP redirect)")
+    print(f"   2. Start attacker: docker exec attacker python3 /root/icmp_redirect_attack.py")
+    print(f"   3. Monitor routing changes: watch 'ip route'")
+    print(f"   4. ICMP redirects work on ANY IP traffic, not just ICMP")
+    print(f"   5. Stop with Ctrl+C")
+    
+    # Start monitoring thread
+    monitor_thread = threading.Thread(target=monitor_routing_changes, daemon=True)
+    monitor_thread.start()
+    
+    # Start traffic generation threads
+    internal_thread = threading.Thread(target=generate_internal_traffic, daemon=True)
+    external_thread = threading.Thread(target=generate_external_traffic, daemon=True)
+    
+    print(f"\n🎬 Starting traffic generation...")
+    print(f"📡 Monitor traffic with: docker exec attacker tcpdump -i eth1 -n host {VICTIM_IP}")
+    print("")
+    
     try:
-        while True:
-            ping_target(seq_num)
-            seq_num += 1
-            
-            # Show routing table every 5 pings to detect changes
-            if seq_num % 5 == 0:
-                display_routing_info()
-            
-            time.sleep(INTERVAL)
+        internal_thread.start()
+        time.sleep(2)  # Stagger start times
+        external_thread.start()
+        
+        # Keep main thread alive
+        while traffic_active:
+            time.sleep(1)
             
     except KeyboardInterrupt:
-        print("\n🛑 Traffic generation stopped")
-        # Show final routing table
-        display_routing_info()
-        print("👋 Exiting...")
+        print(f"\n🛑 Traffic generation stopped by user")
+    except Exception as e:
+        print(f"\n❌ Traffic generation failed: {e}")
+    finally:
+        traffic_active = False
+        
+    print(f"\n✅ Traffic generation completed")
 
 if __name__ == "__main__":
     main()

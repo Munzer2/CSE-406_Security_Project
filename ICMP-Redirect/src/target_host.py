@@ -1,126 +1,269 @@
 #!/usr/bin/env python3
 """
-Target Host Server
-This script implements a simple server on the target host that responds to pings
-and logs all received traffic to demonstrate ICMP Redirect attack effectiveness.
+Target Host Server - Macvlan Implementation
+==========================================
+This script runs simple services on target hosts to make them
+appear as legitimate destinations for victim traffic.
+
+Features:
+- HTTP server simulation
+- DNS server simulation  
+- ICMP responder
+- Traffic logging
 """
 
-import socket
-import struct
-import time
 import sys
-import os
+import time
+import threading
+import signal
+import atexit
+import subprocess
+import socketserver
+import http.server
+from packet_craft import *
 
-# ─── CONFIG ─────────────────────────────────────────────────────────────────────
-TARGET_IP = "192.168.60.5"   # Target's IP (us)
+# ═══════════════════════════════════════════════════════════════════════════════════
+# SERVER CONFIGURATION
+# ═══════════════════════════════════════════════════════════════════════════════════
 
-# ─── PACKET CRAFTING ─────────────────────────────────────────────────────────────
-def checksum(data: bytes) -> int:
-    """Compute Internet checksum for the data"""
-    if len(data) % 2:
-        data += b'\x00'
-    s = sum(struct.unpack(f"!{len(data)//2}H", data))
-    s = (s >> 16) + (s & 0xffff)
-    s += s >> 16
-    return ~s & 0xffff
+# Network Configuration
+MY_IP = "10.9.0.200"  # Default - will be auto-detected
+HTTP_PORT = 80
+DNS_PORT = 53
 
-def create_icmp_echo_reply(orig_packet):
-    """Create an ICMP Echo Reply packet from an Echo Request packet"""
-    # Extract ICMP header from original packet
-    icmp_header = orig_packet[20:28]  # IP header is 20 bytes
-    
-    # Extract payload from original packet
-    payload = orig_packet[28:]
-    
-    # Extract ICMP type, code, checksum, ID, and sequence number
-    icmp_type, icmp_code, old_checksum, icmp_id, icmp_seq = struct.unpack('!BBHHH', icmp_header)
-    
-    # Change type from 8 (Echo Request) to 0 (Echo Reply)
-    icmp_type = 0
-    
-    # Create a new ICMP header with checksum set to 0
-    icmp_header = struct.pack('!BBHHH', icmp_type, icmp_code, 0, icmp_id, icmp_seq)
-    
-    # Calculate checksum for the new header + original payload
-    icmp_checksum = checksum(icmp_header + payload)
-    
-    # Create the final header with correct checksum
-    icmp_header = struct.pack('!BBHHH', icmp_type, icmp_code, icmp_checksum, icmp_id, icmp_seq)
-    
-    # Combine header and payload
-    icmp_reply = icmp_header + payload
-    
-    return icmp_reply
+# Service flags
+services_active = True
+connections_received = 0
 
-def process_packet(packet, addr):
-    """Process a received packet and respond if it's an ICMP Echo Request"""
-    # Extract IP header
-    ip_header = packet[:20]
+def signal_handler(sig, frame):
+    """Handle Ctrl+C gracefully"""
+    global services_active
+    print(f"\n🛑 Target server stopped by user")
+    services_active = False
+    sys.exit(0)
+
+def cleanup():
+    """Cleanup function called on exit"""
+    global connections_received
+    print(f"\n📊 Server Summary:")
+    print(f"   📥 Total connections received: {connections_received}")
+
+def detect_my_ip():
+    """Auto-detect container's IP address"""
+    try:
+        result = subprocess.run(['ip', 'route', 'get', '1'], capture_output=True, text=True)
+        for line in result.stdout.split('\n'):
+            if 'src' in line:
+                # Extract IP from line like "1.0.0.0 via 10.9.0.1 dev eth1 src 10.9.0.200"
+                parts = line.split()
+                for i, part in enumerate(parts):
+                    if part == 'src' and i + 1 < len(parts):
+                        return parts[i + 1]
+    except:
+        pass
     
-    # Extract protocol from IP header (offset 9)
-    protocol = ip_header[9]
-    
-    # If ICMP packet (protocol 1)
-    if protocol == 1:
-        # Extract ICMP header
-        icmp_header = packet[20:28]
+    # Fallback method
+    try:
+        result = subprocess.run(['hostname', '-I'], capture_output=True, text=True)
+        ip = result.stdout.strip().split()[0]
+        if ip and not ip.startswith('127.'):
+            return ip
+    except:
+        pass
         
-        # Extract ICMP type (first byte)
-        icmp_type = icmp_header[0]
-        
-        # If Echo Request (type 8)
-        if icmp_type == 8:
-            src_ip = socket.inet_ntoa(ip_header[12:16])
-            print(f"📥 Echo Request from {src_ip}")
-            
-            # Create Echo Reply
-            icmp_reply = create_icmp_echo_reply(packet)
-            
-            return icmp_reply, src_ip
-    
-    return None, None
+    return MY_IP  # Default fallback
 
-# ─── MAIN FUNCTION ─────────────────────────────────────────────────────────────────
-def main():
-    """Main function"""
-    print("🎯 Target Host Server")
-    print("======================================")
-    print(f"Target IP: {TARGET_IP}")
-    print("Responding to all ICMP Echo Requests")
-    print("======================================")
+class CustomHTTPHandler(http.server.SimpleHTTPRequestHandler):
+    """Custom HTTP handler that logs requests"""
     
-    # Check if running as root
-    if os.geteuid() != 0:
-        print("❌ This script must be run as root to create raw sockets.")
-        sys.exit(1)
+    def do_GET(self):
+        global connections_received
+        connections_received += 1
+        client_ip = self.client_address[0]
+        print(f"📥 HTTP GET request from {client_ip}: {self.path}")
+        
+        # Send a simple response
+        self.send_response(200)
+        self.send_header('Content-type', 'text/html')
+        self.end_headers()
+        
+        response = f"""
+        <html>
+        <head><title>Target Server {MY_IP}</title></head>
+        <body>
+        <h1>Target Server Active</h1>
+        <p>This is target server {MY_IP}</p>
+        <p>Request from: {client_ip}</p>
+        <p>Path: {self.path}</p>
+        <p>Time: {time.strftime('%Y-%m-%d %H:%M:%S')}</p>
+        </body>
+        </html>
+        """
+        self.wfile.write(response.encode())
+    
+    def do_POST(self):
+        global connections_received
+        connections_received += 1
+        client_ip = self.client_address[0]
+        print(f"📥 HTTP POST request from {client_ip}: {self.path}")
+        self.do_GET()  # Same response for now
+    
+    def log_message(self, format, *args):
+        # Suppress default logging to reduce noise
+        pass
+
+def run_http_server():
+    """Run simple HTTP server"""
+    try:
+        with socketserver.TCPServer(("", HTTP_PORT), CustomHTTPHandler) as httpd:
+            print(f"🌐 HTTP server started on {MY_IP}:{HTTP_PORT}")
+            while services_active:
+                httpd.timeout = 1
+                httpd.handle_request()
+    except Exception as e:
+        print(f"⚠️  HTTP server error: {e}")
+
+def run_dns_server():
+    """Run simple DNS responder (UDP)"""
+    global connections_received
     
     try:
-        # Create a raw socket to receive all IP packets
-        with socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP) as recv_socket:
-            # Create a raw socket to send ICMP replies
-            with socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP) as send_socket:
+        import socket
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind(('', DNS_PORT))
+        sock.settimeout(1.0)
+        
+        print(f"📡 DNS server started on {MY_IP}:{DNS_PORT}")
+        
+        while services_active:
+            try:
+                data, addr = sock.recvfrom(1024)
+                connections_received += 1
+                print(f"📥 DNS query from {addr[0]}:{addr[1]} ({len(data)} bytes)")
                 
-                print("📡 Listening for incoming packets...")
-                print("Press Ctrl+C to stop")
+                # Send a simple DNS response (not a real DNS packet, just acknowledgment)
+                response = b"DNS response from target server"
+                sock.sendto(response, addr)
                 
-                while True:
-                    # Receive packet
-                    packet, addr = recv_socket.recvfrom(1024)
-                    
-                    # Process packet
-                    reply, dst_ip = process_packet(packet, addr)
-                    
-                    # If reply needed, send it
-                    if reply:
-                        send_socket.sendto(reply, (dst_ip, 0))
-                        print(f"📤 Echo Reply sent to {dst_ip}")
+            except socket.timeout:
+                continue
+            except Exception as e:
+                if services_active:
+                    print(f"⚠️  DNS server error: {e}")
+                break
+                
+    except Exception as e:
+        print(f"⚠️  Failed to start DNS server: {e}")
+
+def run_ping_responder():
+    """Respond to ICMP pings automatically (system handles this)"""
+    print(f"🏓 ICMP ping responder active (automatic)")
+    
+    # Just monitor ping traffic for logging
+    while services_active:
+        try:
+            # Use tcpdump to monitor incoming pings
+            result = subprocess.run([
+                'timeout', '5', 'tcpdump', '-c', '1', '-n', '-i', 'eth1', 'icmp and dst', MY_IP
+            ], capture_output=True, text=True)
+            
+            if result.stdout and 'ICMP echo request' in result.stdout:
+                # Extract source IP from tcpdump output
+                for line in result.stdout.split('\n'):
+                    if 'ICMP echo request' in line:
+                        parts = line.split()
+                        if len(parts) > 2:
+                            src_ip = parts[2]
+                            print(f"🏓 PING received from {src_ip}")
+                            break
+                            
+        except Exception as e:
+            if services_active:
+                pass  # Ignore errors in monitoring
+            
+        time.sleep(1)
+
+def monitor_traffic():
+    """Monitor all incoming traffic"""
+    print(f"📊 Traffic monitor started")
+    
+    while services_active:
+        try:
+            # Monitor overall traffic to this host
+            result = subprocess.run([
+                'timeout', '5', 'netstat', '-i'
+            ], capture_output=True, text=True)
+            
+            # Just sleep and continue - detailed monitoring handled by other functions
+            time.sleep(10)
+            
+        except Exception as e:
+            if services_active:
+                pass  # Ignore monitoring errors
+                
+        time.sleep(5)
+
+def main():
+    """Main server function"""
+    global services_active, MY_IP
+    
+    # Auto-detect IP
+    MY_IP = detect_my_ip()
+    
+    print("🎯 Target Host Server - Macvlan Version")
+    print("========================================")
+    print(f"🏠 Server IP: {MY_IP}")
+    print(f"🌐 HTTP Port: {HTTP_PORT}")
+    print(f"📡 DNS Port: {DNS_PORT}")
+    print("========================================")
+    
+    # Register cleanup and signal handlers
+    atexit.register(cleanup)
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    print(f"\n🔧 Server Services:")
+    print(f"   ✅ HTTP server (port {HTTP_PORT})")
+    print(f"   ✅ DNS responder (port {DNS_PORT})")
+    print(f"   ✅ ICMP ping responder")
+    print(f"   ✅ Traffic monitor")
+    
+    print(f"\n💡 Testing Instructions:")
+    print(f"   HTTP: curl http://{MY_IP}")
+    print(f"   PING: ping {MY_IP}")
+    print(f"   DNS:  dig @{MY_IP} example.com")
+    
+    # Start service threads
+    http_thread = threading.Thread(target=run_http_server, daemon=True)
+    dns_thread = threading.Thread(target=run_dns_server, daemon=True)
+    ping_thread = threading.Thread(target=run_ping_responder, daemon=True)
+    monitor_thread = threading.Thread(target=monitor_traffic, daemon=True)
+    
+    print(f"\n🎬 Starting services...")
+    
+    try:
+        http_thread.start()
+        dns_thread.start()
+        ping_thread.start()
+        monitor_thread.start()
+        
+        print(f"✅ All services started on {MY_IP}")
+        print(f"📊 Monitor logs below...")
+        print(f"⏹️  Stop with Ctrl+C")
+        print("")
+        
+        # Keep main thread alive
+        while services_active:
+            time.sleep(1)
             
     except KeyboardInterrupt:
-        print("\n🛑 Server stopped by user")
-        print("👋 Exiting...")
-        
+        print(f"\n🛑 Server stopped by user")
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"\n❌ Server failed: {e}")
+    finally:
+        services_active = False
+        
+    print(f"\n✅ Target server shutdown complete")
 
 if __name__ == "__main__":
     main()

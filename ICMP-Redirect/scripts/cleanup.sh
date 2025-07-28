@@ -1,118 +1,94 @@
 #!/bin/bash
 
-# ICMP Redirect Attack - Cleanup Script
-# This script cleans up all containers and networks created for the demonstration
+# ICMP Redirect Attack - Macvlan Cleanup Script
+# ==============================================
+# This script cleans up the macvlan-based attack environment
 
-echo "🧹 Starting ICMP Redirect Attack Cleanup..."
-echo "==========================================="
+echo "🧹 ICMP Redirect Attack Lab - Macvlan Cleanup"
+echo "=============================================="
 
-# Function to check if container exists
-container_exists() {
-    sudo docker ps -a --format "table {{.Names}}" | grep -q "^$1$" 2>/dev/null
+# Color codes
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+print_status() {
+    echo -e "${GREEN}✅${NC} $1"
 }
 
-# Function to check if network exists
-network_exists() {
-    sudo docker network ls --format "table {{.Name}}" | grep -q "^$1$" 2>/dev/null
+print_warning() {
+    echo -e "${YELLOW}⚠️${NC} $1"
 }
 
-# Ask for confirmation if auto mode not specified
-if [ "$1" != "--force" ]; then
-    echo "⚠️  This will remove all containers and networks created for the ICMP redirect demo."
-    echo "   Containers to be removed: victim, attacker, router, target, target2, malicious-router"
-    echo "   Networks to be removed: internal-net, target-net"
-    echo ""
-    read -p "Are you sure you want to continue? (y/N): " confirm
-
-    case $confirm in
-        [yY]|[yY][eE][sS])
-            echo "🗑️  Proceeding with cleanup..."
-            ;;
-        *)
-            echo "👋 Cleanup cancelled."
-            exit 0
-            ;;
-    esac
-else
-    echo "🔄 Running in automatic mode, skipping confirmation..."
-fi
+print_error() {
+    echo -e "${RED}❌${NC} $1"
+}
 
 # Stop and remove containers
-echo ""
-echo "🛑 Step 1: Stopping and removing containers..."
+echo "🛑 Stopping and removing containers..."
 
 containers=("victim" "attacker" "router" "target" "target2" "malicious-router")
 for container in "${containers[@]}"; do
-    if container_exists "$container"; then
-        echo "  🗑️  Removing container: $container"
-        sudo docker rm -f "$container" 2>/dev/null || true
-        echo "  ✅ Container $container removed"
-    else
-        echo "  ℹ️  Container $container does not exist"
+    if docker ps -a --format "table {{.Names}}" | grep -q "^$container$"; then
+        echo "  Removing container: $container"
+        docker rm -f "$container" 2>/dev/null || true
     fi
 done
 
-# Remove networks
-echo ""
-echo "🌐 Step 2: Removing networks..."
+print_status "All containers removed"
 
-networks=("internal-net" "target-net")
-for network in "${networks[@]}"; do
-    if network_exists "$network"; then
-        echo "  🗑️  Removing network: $network"
-        sudo docker network rm "$network" 2>/dev/null || true
-        echo "  ✅ Network $network removed"
-    else
-        echo "  ℹ️  Network $network does not exist"
+# Remove macvlan network
+echo "🌐 Removing macvlan network..."
+
+if docker network ls --format "table {{.Name}}" | grep -q "^attack-net$"; then
+    echo "  Removing network: attack-net"
+    docker network rm attack-net 2>/dev/null || true
+    print_status "Macvlan network removed"
+else
+    print_warning "Network attack-net not found"
+fi
+
+# Remove any lingering networks from old setups
+echo "🧹 Cleaning up any old networks..."
+old_networks=("internal-net" "target-net")
+for network in "${old_networks[@]}"; do
+    if docker network ls --format "table {{.Name}}" | grep -q "^$network$"; then
+        echo "  Removing old network: $network"
+        docker network rm "$network" 2>/dev/null || true
     fi
 done
-
-# Clean up any orphaned resources
-echo ""
-echo "🧽 Step 3: Cleaning up orphaned resources..."
-echo "  🗑️  Disconnecting containers from networks (if any)..."
-for container in "${containers[@]}"; do
-    if container_exists "$container"; then
-        for network in "${networks[@]}"; do
-            if network_exists "$network"; then
-                sudo docker network disconnect "$network" "$container" 2>/dev/null || true
-            fi
-        done
-    fi
-done
-
-# Wait a moment for network interfaces to be released
-sleep 2
-
-echo "  🗑️  Pruning unused Docker resources..."
-sudo docker system prune -f --volumes 2>/dev/null || true
 
 # Verify cleanup
-echo ""
-echo "🔍 Step 4: Verifying cleanup..."
+echo "🔍 Verifying cleanup..."
 
-echo "  📋 Remaining containers:"
-remaining_containers=$(sudo docker ps -a --filter "name=victim" --filter "name=attacker" --filter "name=router" --filter "name=target" --filter "name=target2" --filter "name=malicious-router" --format "table {{.Names}}" | tail -n +2)
-if [ -z "$remaining_containers" ]; then
-    echo "  ✅ No demo containers remaining"
+remaining_containers=$(docker ps -a --format "table {{.Names}}" | grep -E '^(victim|attacker|router|target|target2|malicious-router)$' | wc -l)
+remaining_networks=$(docker network ls --format "table {{.Name}}" | grep -E '^(attack-net|internal-net|target-net)$' | wc -l)
+
+if [ "$remaining_containers" -eq 0 ] && [ "$remaining_networks" -eq 0 ]; then
+    print_status "Cleanup completed successfully"
+    echo ""
+    echo "📊 Final Status:"
+    echo "   ✅ All attack containers removed"
+    echo "   ✅ All attack networks removed"
+    echo "   ✅ System restored to clean state"
 else
-    echo "  ⚠️  Some containers still exist: $remaining_containers"
+    print_warning "Cleanup may be incomplete"
+    echo ""
+    echo "📊 Remaining:"
+    if [ "$remaining_containers" -gt 0 ]; then
+        echo "   ⚠️  Containers: $remaining_containers"
+        docker ps -a --format "table {{.Names}}\t{{.Status}}" | grep -E '(victim|attacker|router|target|malicious-router)'
+    fi
+    if [ "$remaining_networks" -gt 0 ]; then
+        echo "   ⚠️  Networks: $remaining_networks"
+        docker network ls --format "table {{.Name}}\t{{.Driver}}" | grep -E '(attack-net|internal-net|target-net)'
+    fi
 fi
 
-echo "  📋 Remaining networks:"
-remaining_networks=$(sudo docker network ls --filter "name=internal-net" --filter "name=target-net" --format "table {{.Name}}" | tail -n +2)
-if [ -z "$remaining_networks" ]; then
-    echo "  ✅ No demo networks remaining"
-else
-    echo "  ⚠️  Some networks still exist: $remaining_networks"
-fi
-
-# Final status
 echo ""
-echo "🎉 Cleanup Complete!"
-echo "==================="
-echo "✅ All demo containers removed"
-echo "✅ All demo networks removed"
-echo "✅ Orphaned resources cleaned"
+print_status "Macvlan cleanup complete!"
 echo ""
-echo "💡 The environment is now clean and ready for a fresh setup."
+print_warning "Note: Host interface settings (promiscuous mode, etc.) are preserved"
+echo "      If you need to reset host networking, you may need to reboot or"
+echo "      manually reset interface configurations."
