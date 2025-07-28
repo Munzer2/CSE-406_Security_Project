@@ -60,7 +60,9 @@ sleep 2
 
 echo ""
 echo "📱 Testing baseline ping from victim2 to router2..."
-echo "Expected: Normal ping responses with router2 receiving packets"
+echo "Expected behaviour from router2: Receive ICMP Echo Requests and send replies."
+echo "Use this command in another terminal to check: sudo docker exec -it router2 bash -lc "tcpdump -n -i eth0 icmp"
+echo "Expected: Then try normal ping responses with router2 receiving packets with the following command:"
 sudo docker exec victim2 ping -c 3 20.20.0.2
 
 echo ""
