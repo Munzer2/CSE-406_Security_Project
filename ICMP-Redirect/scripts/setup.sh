@@ -14,6 +14,7 @@ TARGET2_IP="10.9.0.201"
 
 # ====== PHASE 1: LAUNCH ON BRIDGE ======
 echo "🚦 [Phase 1] Launching containers on bridge (with internet)..."
+echo "📦 Installing all packages including dsniff for ARP spoofing..."
 for name in victim attacker router target target2; do
   docker rm -f $name 2>/dev/null || true
   docker run -d --name $name \
@@ -30,8 +31,16 @@ docker pull $IMG
 for c in victim attacker router target target2; do
   echo "🛠️  Installing packages in $c..."
   docker exec $c apt update
-  docker exec $c apt install -y python3 python3-pip iproute2 iputils-ping net-tools tcpdump iptables dnsutils curl wget
+  if [ "$c" = "attacker" ]; then
+    # Install additional packages for attacker including dsniff (arpspoof)
+    echo "🎭 Installing ARP spoofing tools (dsniff) for attacker..."
+    docker exec $c apt install -y python3 python3-pip iproute2 iputils-ping net-tools tcpdump iptables dnsutils curl wget dsniff
+  else
+    docker exec $c apt install -y python3 python3-pip iproute2 iputils-ping net-tools tcpdump iptables dnsutils curl wget
+  fi
 done
+
+echo "✅ All packages installed while containers have internet access"
 
 # Copy lab scripts if you have them
 # Determine the correct path to src directory
@@ -63,7 +72,8 @@ if [ -f "$SRC_DIR/target_host.py" ]; then
 fi
 
 # ====== PHASE 2: SWITCH TO MACVLAN ======
-echo "🌐 [Phase 2] Preparing macvlan for L2 attacks..."
+echo "🌐 [Phase 2] Switching to macvlan network (no internet access)..."
+echo "🎭 ARP spoofing tools already installed in attacker container"
 
 docker network rm $MACVLAN 2>/dev/null || true
 docker network create -d macvlan --subnet=10.9.0.0/24 --gateway=10.9.0.1 -o parent=$HOST_IF $MACVLAN
